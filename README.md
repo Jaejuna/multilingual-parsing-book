@@ -1,4 +1,4 @@
-# i18n Parsing Playbook
+# multilingual-parsing-book(i18n) book
 
 A field-tested collection of gotchas and patterns from running a game
 localization evaluation platform — every problem documented here was
