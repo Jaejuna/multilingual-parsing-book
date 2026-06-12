@@ -14,13 +14,14 @@ chapter that matches the bug you're chasing.
 0. [System at a glance — where things break](#0-system-at-a-glance--where-things-break)
 1. [Encoding — the Korean-Excel CSV trap](#1-encoding--the-korean-excel-csv-trap)
 2. [Language codes — locale vs base mismatch](#2-language-codes--locale-vs-base-mismatch)
-3. [Glossary matching — the substring pitfall](#3-glossary-matching--the-substring-pitfall)
-4. [File downloads — RFC 5987 Content-Disposition](#4-file-downloads--rfc-5987-content-disposition)
-5. [Two ORMs, one Postgres — boundary discipline](#5-two-orms-one-postgres--boundary-discipline)
-6. [Pre-work checklist](#6-pre-work-checklist)
-7. [Snippet index](#7-snippet-index)
-8. [Debugging commands](#8-debugging-commands)
-9. [References](#9-references)
+3. [Per-locale content files — partial frontmatter fallback](#3-per-locale-content-files--partial-frontmatter-fallback)
+4. [Glossary matching — the substring pitfall](#4-glossary-matching--the-substring-pitfall)
+5. [File downloads — RFC 5987 Content-Disposition](#5-file-downloads--rfc-5987-content-disposition)
+6. [Two ORMs, one Postgres — boundary discipline](#6-two-orms-one-postgres--boundary-discipline)
+7. [Pre-work checklist](#7-pre-work-checklist)
+8. [Snippet index](#8-snippet-index)
+9. [Debugging commands](#9-debugging-commands)
+10. [References](#10-references)
 
 ---
 
@@ -37,7 +38,7 @@ S3 (raw file storage)
 FastAPI worker (Python)
   ├─ S3 download → cache (utf-8-sig preferred)
   ├─ Augmenters (Glossary / Retrieval / Graph)
-  │     - substring matching                 ← #3 partial-match & boundaries
+  │     - substring matching                 ← #4 partial-match & boundaries
   │     - lang-code lookup                   ← #2 again
   ├─ Prompt assembly ({{GLOSSARY}} etc.)
   └─ Engine call (Vertex / Cortex / ...)
@@ -240,9 +241,96 @@ csv "zh-CN" + "zh-TW" × ctx "zh"    → either (last write wins, document!)
 
 ---
 
-## 3. Glossary matching — the substring pitfall
+## 3. Per-locale content files — partial frontmatter fallback
 
-### 3.1 Current behavior
+> Context: this one is **not** from the eval platform — it's from a
+> statically-generated MDX site serving the same posts in `ko` (base) and
+> `en`. Same i18n shape, a different layer: here the language code decides
+> **which file to load**, not which dictionary key to look up. Same class
+> of bug, shipped and fixed.
+
+### 3.1 The layout
+
+One base file per slug, plus optional per-locale override files:
+
+```
+content/
+  my-post.mdx        ← base (ko): full frontmatter + body + thumbnail
+  my-post.en.mdx     ← en override: frontmatter only, often partial
+```
+
+The base file is the source of truth. The locale file overrides **some**
+frontmatter fields and replaces the body — it is not a standalone post.
+
+### 3.2 Two failures this layout invites
+
+**(a) The variant counted as a separate post.** A naive
+`readdir().filter(f => f.endsWith(".mdx"))` lists `my-post.en.mdx` as its
+own entry, so the index renders the post twice.
+
+**(b) Blind spread drops inherited fields.** The thumbnail is derived from
+the base body; the `.en.mdx` file has no `thumbnail`. Spreading
+`{ ...base, ...variant }` over frontmatter is fine — until the variant
+carries a key with an empty value, which then overrides the good base
+value with nothing. Fields the locale file doesn't own (thumbnail, reading
+time) must be recomputed from the **base**, not read off the merged object.
+
+### 3.3 Strategy: list base only, override on request
+
+Two stages, mirroring the alias rule in #2 — exact (locale) wins, base is
+the floor:
+
+```ts
+const LOCALE_RE = /\.(en|ja|zh)\.mdx$/;       // variant suffixes
+
+// 1) List: base files only — variants are not standalone posts
+function getAllPosts(): Post[] {
+  return readdirSync(CONTENT)
+    .filter((f) => f.endsWith(".mdx") && !LOCALE_RE.test(f))
+    .map((f) => parseBase(join(CONTENT, f)));
+}
+
+// 2) Resolve one slug for a locale: base is the floor, locale on top
+function getPost(slug: string, locale: string): Post {
+  const base = parseBase(join(CONTENT, `${slug}.mdx`));   // always exists
+  if (locale === DEFAULT_LOCALE) return base;
+
+  const variantPath = join(CONTENT, `${slug}.${locale}.mdx`);
+  if (!existsSync(variantPath)) return base;              // fall back to base
+
+  const variant = matter(readFileSync(variantPath, "utf-8"));
+  return {
+    ...base,                                  // thumbnail, readingTime — from base
+    frontmatter: { ...base.frontmatter, ...stripEmpty(variant.data) },
+    content: variant.content,                 // body fully replaced, not merged
+  };
+}
+```
+
+### 3.4 `gray-matter` returns `data` and `content` separately
+
+`matter(raw)` yields `{ data, content }` — the frontmatter object and the
+raw body string. Only `data` participates in the locale merge; `content`
+is the body you hand to the MDX renderer. Keep them apart — never spread
+`content` into frontmatter:
+
+```ts
+const { data, content } = matter(raw);
+```
+
+**Trade-off / gotcha:** spreading `...variant.data` copies only the keys
+the variant declares — good for partial override, but an author who writes
+`thumbnail:` with a blank value silently erases the base value. Either
+`stripEmpty()` the nullish keys before merging (above) or document that
+locale files must **omit** inherited fields, never blank them.
+
+→ Runnable: [`snippets/locale-content/resolve-locale-content.ts`](./snippets/locale-content/resolve-locale-content.ts).
+
+---
+
+## 4. Glossary matching — the substring pitfall
+
+### 4.1 Current behavior
 
 ```python
 haystack = text if case_sensitive else text.lower()
@@ -256,7 +344,7 @@ for src, lang_map in src_dict.items():
 exist anyway). **Cons:** in English, `"AI"` matches inside `"Said"` and
 `"again"`. Both `"AI"` and `"AI Director"` fire on the same haystack.
 
-### 3.2 Improvement options (not all applied)
+### 4.2 Improvement options (not all applied)
 
 1. **Per-language strategy:** `\b{term}\b` for Latin scripts,
    substring for CJK.
@@ -273,7 +361,7 @@ exist anyway). **Cons:** in English, `"AI"` matches inside `"Said"` and
   [`word_boundary_match.py`](./snippets/glossary-matching/word_boundary_match.py),
   [`aho_corasick_match.py`](./snippets/glossary-matching/aho_corasick_match.py).
 
-### 3.3 Real bug: `case_sensitive` option silently dropped
+### 4.3 Real bug: `case_sensitive` option silently dropped
 
 `GlossaryAugmenter.config_schema` declares a `case_sensitive` option,
 but `resource_resolver._spec_for_glossary` only forwards `file_ref` —
@@ -283,9 +371,9 @@ read it from `ResourceVersion.meta` and include it in the spec.
 
 ---
 
-## 4. File downloads — RFC 5987 Content-Disposition
+## 5. File downloads — RFC 5987 Content-Disposition
 
-### 4.1 The problem
+### 5.1 The problem
 
 Naive Korean filename in a download header:
 
@@ -299,7 +387,7 @@ Content-Disposition: attachment; filename="용어집.csv"
 | Firefox | mojibake filename (treats value as Latin-1) |
 | Safari | may refuse download or save with garbled name |
 
-### 4.2 Fix: dual `filename` + `filename*`
+### 5.2 Fix: dual `filename` + `filename*`
 
 RFC 5987 defines a way to spell out the encoding explicitly:
 
@@ -318,7 +406,7 @@ function contentDisposition(name: string): string {
 
 → Runnable: [`snippets/download/content-disposition-rfc5987.ts`](./snippets/download/content-disposition-rfc5987.ts).
 
-### 4.3 Add a BOM when the destination is Excel
+### 5.3 Add a BOM when the destination is Excel
 
 Exported CSV/XLSX is almost always opened in Excel. Prepend a BOM so
 Korean-Windows Excel reads the file as UTF-8 instead of cp949:
@@ -339,9 +427,9 @@ For large exports, stream instead of building the body in memory.
 
 ---
 
-## 5. Two ORMs, one Postgres — boundary discipline
+## 6. Two ORMs, one Postgres — boundary discipline
 
-### 5.1 Structure
+### 6.1 Structure
 
 The same Postgres instance hosts tables owned by two stacks:
 
@@ -360,7 +448,7 @@ Postgres
     └── ...
 ```
 
-### 5.2 Principles
+### 6.2 Principles
 
 - **Migration ownership is exclusive.** A given table is migrated by
   one stack only; the other accesses it read-only via raw SQL.
@@ -371,7 +459,7 @@ Postgres
   columns (`"sourceText"`, `"externalId"`) via raw SQL, double-quote
   them — Postgres folds unquoted identifiers to lowercase.
 
-### 5.3 Normalize vs JSON column — decision rule
+### 6.3 Normalize vs JSON column — decision rule
 
 > Normalize when the result is **small + naturally decomposable + has
 > analytic value**. Otherwise keep a reference or don't store it.
@@ -392,16 +480,16 @@ disproportionately.
 
 ---
 
-## 6. Pre-work checklist
+## 7. Pre-work checklist
 
-### 6.1 Before ingesting multilingual text
+### 7.1 Before ingesting multilingual text
 
 - [ ] Where is the decode step (browser? server? both)?
 - [ ] What's the assumed encoding? Are non-UTF-8 inputs possible?
 - [ ] BOM handling?
 - [ ] NFC/NFD normalization required? (macOS filenames, Hangul jamo)
 
-### 6.2 When handling lang codes
+### 7.2 When handling lang codes
 
 - [ ] Do base (`ko`) and locale (`ko-KR`) forms appear in the same
       code path?
@@ -409,7 +497,7 @@ disproportionately.
 - [ ] Do you need to preserve region (`zh-CN` vs `zh-TW`)?
 - [ ] Casing? Hyphen vs underscore?
 
-### 6.3 When writing a term matcher
+### 7.3 When writing a term matcher
 
 - [ ] CJK vs Latin word-boundary semantics?
 - [ ] `min_len` guard against single-character noise?
@@ -418,7 +506,7 @@ disproportionately.
 - [ ] Performance: at terms × segments > 1M, reconsider data
       structure.
 
-### 6.4 When implementing upload/download
+### 7.4 When implementing upload/download
 
 - [ ] Upload: read raw bytes and detect encoding (NEVER `File.text()`
       on user-controlled CSV).
@@ -427,7 +515,7 @@ disproportionately.
 - [ ] BOM the export if Excel is the likely consumer.
 - [ ] Match Content-Type on presigned PUT requests.
 
-### 6.5 When crossing two DB boundaries
+### 7.5 When crossing two DB boundaries
 
 - [ ] Is migration ownership explicit?
 - [ ] When does cached state become stale?
@@ -435,16 +523,25 @@ disproportionately.
 - [ ] If a transaction straddles both stacks, how is partial failure
       handled?
 
-### 6.6 When storing evaluation / debug data
+### 7.6 When storing evaluation / debug data
 
 - [ ] Does this benefit from normalization (indexing, analytics)?
 - [ ] How big is the per-row payload? (KB per row → reconsider)
 - [ ] What's the retention policy?
 - [ ] Any PII?
 
+### 7.7 When resolving per-locale content files
+
+- [ ] Are locale variants (`*.en.mdx`) excluded from the base listing?
+- [ ] Does a missing variant fall back to the base file?
+- [ ] Frontmatter merged field-by-field, body replaced wholesale?
+- [ ] Are base-derived fields (thumbnail, reading time) recomputed from
+      the base, not read off the merged object?
+- [ ] Do blank values in a variant clobber good base values?
+
 ---
 
-## 7. Snippet index
+## 8. Snippet index
 
 Every pattern above has a runnable equivalent in
 [`snippets/`](./snippets/). Pick a single file and drop it into another
@@ -458,6 +555,7 @@ project — they're self-contained.
 | Mojibake on screen, want to know its origin | [`debug/mojibake_trace.py`](./snippets/debug/mojibake_trace.py) |
 | Glossary CSV uses `ko-KR`, Job uses `ko` (0 matches) | [`lang-codes/lang_aliases.py`](./snippets/lang-codes/lang_aliases.py) |
 | Multiple lang-tag spellings polluting the DB | [`lang-codes/normalize_lang.py`](./snippets/lang-codes/normalize_lang.py) |
+| `*.en.mdx` shows up as a duplicate post / EN post loses its thumbnail | [`locale-content/resolve-locale-content.ts`](./snippets/locale-content/resolve-locale-content.ts) |
 | Matcher catches "AI" inside "Said" | [`glossary-matching/word_boundary_match.py`](./snippets/glossary-matching/word_boundary_match.py) |
 | Term loop too slow with thousands of terms | [`glossary-matching/aho_corasick_match.py`](./snippets/glossary-matching/aho_corasick_match.py) |
 | Hangul filename garbled in Firefox/Safari downloads | [`download/content-disposition-rfc5987.ts`](./snippets/download/content-disposition-rfc5987.ts) |
@@ -466,7 +564,7 @@ project — they're self-contained.
 
 ---
 
-## 8. Debugging commands
+## 9. Debugging commands
 
 ### Suspect a file encoding
 
@@ -522,7 +620,7 @@ encoding. CLI version: [`snippets/debug/mojibake_trace.py`](./snippets/debug/moj
 
 ---
 
-## 9. References
+## 10. References
 
 - [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/) —
   `TextDecoder` supported encodings.

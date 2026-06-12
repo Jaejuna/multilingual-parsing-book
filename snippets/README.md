@@ -17,6 +17,8 @@ snippets/
 │   ├── lang_aliases.py              # ko-KR ↔ ko alias bridging (Python)
 │   ├── lang-aliases.ts              # same (TypeScript)
 │   └── normalize_lang.py            # BCP-47 canonical form
+├── locale-content/             # per-locale content file resolution
+│   └── resolve-locale-content.ts    # list base + partial frontmatter fallback
 ├── glossary-matching/          # term lookup strategies
 │   ├── substring_match.py           # simplest "term in text" loop
 │   ├── word_boundary_match.py       # \b for Latin, substring for CJK
@@ -50,6 +52,7 @@ snippets/
 | You see `ë³´íµ`-style text and want to know its origin | [`debug/mojibake_trace.py`](./debug/mojibake_trace.py) |
 | Glossary CSV uses `ko-KR` but Job snapshot uses `ko` (0 matches) | [`lang-codes/lang_aliases.py`](./lang-codes/lang_aliases.py) |
 | Multiple lang tag spellings polluting your DB | [`lang-codes/normalize_lang.py`](./lang-codes/normalize_lang.py) |
+| `*.en.mdx` shows up as a duplicate post / EN post loses its thumbnail | [`locale-content/resolve-locale-content.ts`](./locale-content/resolve-locale-content.ts) |
 | Glossary matcher catches "AI" inside "Said" in English text | [`glossary-matching/word_boundary_match.py`](./glossary-matching/word_boundary_match.py) |
 | Term loop is too slow with thousands of terms | [`glossary-matching/aho_corasick_match.py`](./glossary-matching/aho_corasick_match.py) |
 | Hangul filename garbled in Firefox/Safari downloads | [`download/content-disposition-rfc5987.ts`](./download/content-disposition-rfc5987.ts) |

@@ -22,7 +22,7 @@ S3 (raw 파일 보관)
 FastAPI worker (Python)
   ├─ S3 다운로드 → cache (utf-8-sig 권장)
   ├─ Augmenter (Glossary/Retrieval/Graph)
-  │     - substring 매칭                 ← #3 부분문자열·단어경계
+  │     - substring 매칭                 ← #4 부분문자열·단어경계
   │     - lang 코드 lookup              ← #2 다시 등장
   ├─ Prompt assemble ({{GLOSSARY}} 등 치환)
   └─ Engine 호출 (Vertex/Cortex/...)
@@ -49,6 +49,7 @@ TextSegment / Translation / GlossaryMatch (Prisma 소유 테이블)
 snippets/
 ├── encoding/           — 바이트 ↔ 문자열 변환 (BOM, cp949 fallback, CSV export)
 ├── lang-codes/         — locale ↔ base alias, BCP-47 정규화
+├── locale-content/     — locale별 콘텐츠 파일 resolve + frontmatter 부분 폴백
 ├── glossary-matching/  — substring / word-boundary / Aho-Corasick
 ├── download/           — RFC 5987 Content-Disposition, 스트리밍 CSV
 └── debug/              — 인코딩 inspector, mojibake CLI
@@ -217,9 +218,91 @@ csv "zh-CN" 와 "zh-TW" 공존 × ctx "zh"    → 둘 중 하나 (last write win
 
 ---
 
-## 3. 용어집 매칭 (Glossary Matching) — substring 의 함정
+## 3. locale별 콘텐츠 파일 — frontmatter 부분 폴백
 
-### 3.1 현재 동작
+> 맥락: 이 장만 translation-eval 이 아니라 **MDX 정적 사이트**(같은 글을 `ko`(base)와
+> `en` 으로 서빙)에서 나온 것이다. i18n 형태는 같지만 레이어가 다르다 — 여기서는 언어
+> 코드가 "어떤 dict 키를 조회하느냐" 가 아니라 **"어떤 파일을 로드하느냐"** 를 결정한다.
+> 같은 부류의 버그를 실제로 밟고 고쳤다.
+
+### 3.1 파일 구조
+
+slug 당 base 파일 하나 + locale별 override 파일(선택):
+
+```
+content/
+  my-post.mdx        ← base (ko): 전체 frontmatter + 본문 + 썸네일
+  my-post.en.mdx     ← en override: frontmatter만, 보통 일부만
+```
+
+base 파일이 source of truth. locale 파일은 frontmatter 의 **일부**만 덮어쓰고 본문을
+교체한다 — 독립된 글이 아니다.
+
+### 3.2 이 구조가 부르는 두 가지 실패
+
+**(a) 변종이 별개 글로 카운트됨.** 단순한
+`readdir().filter(f => f.endsWith(".mdx"))` 는 `my-post.en.mdx` 를 별도 엔트리로
+잡아서 목록에 글이 두 번 뜬다.
+
+**(b) blind spread 가 상속 필드를 날림.** 썸네일은 base 본문에서 추출되는데 `.en.mdx`
+파일엔 `thumbnail` 키가 없다. frontmatter 를 `{ ...base, ...variant }` 로 펼치는 건
+괜찮지만 — 변종이 빈 값을 가진 키를 들고 있으면 멀쩡한 base 값을 빈 값으로 덮어쓴다.
+locale 파일이 소유하지 않는 필드(썸네일, 읽기 시간)는 merge 결과가 아니라 **base** 에서
+다시 계산해야 한다.
+
+### 3.3 전략: base만 나열, 요청 시 override
+
+#2 의 alias 전략과 같은 결 — exact(locale) 우선, base 가 바닥값:
+
+```ts
+const LOCALE_RE = /\.(en|ja|zh)\.mdx$/;       // 변종 접미사
+
+// 1) 목록: base 파일만 — 변종은 독립 글이 아님
+function getAllPosts(): Post[] {
+  return readdirSync(CONTENT)
+    .filter((f) => f.endsWith(".mdx") && !LOCALE_RE.test(f))
+    .map((f) => parseBase(join(CONTENT, f)));
+}
+
+// 2) 한 slug 을 locale 로 resolve: base 가 바닥, locale 이 위에
+function getPost(slug: string, locale: string): Post {
+  const base = parseBase(join(CONTENT, `${slug}.mdx`));   // 항상 존재
+  if (locale === DEFAULT_LOCALE) return base;
+
+  const variantPath = join(CONTENT, `${slug}.${locale}.mdx`);
+  if (!existsSync(variantPath)) return base;              // 변종 없으면 base 폴백
+
+  const variant = matter(readFileSync(variantPath, "utf-8"));
+  return {
+    ...base,                                  // 썸네일, readingTime — base 에서
+    frontmatter: { ...base.frontmatter, ...stripEmpty(variant.data) },
+    content: variant.content,                 // 본문은 통째로 교체, merge 아님
+  };
+}
+```
+
+### 3.4 `gray-matter` 는 `data` 와 `content` 를 따로 반환
+
+`matter(raw)` 는 `{ data, content }` 를 준다 — frontmatter 객체와 raw 본문 문자열.
+locale merge 에는 `data` 만 참여하고 `content` 는 MDX 렌더러에 넘길 본문이다. 둘을
+섞지 말 것 — `content` 를 frontmatter 에 spread 하면 안 된다:
+
+```ts
+const { data, content } = matter(raw);
+```
+
+**트레이드오프/함정**: `...variant.data` 펼치기는 변종이 선언한 키만 복사한다 — 부분
+override 엔 좋지만, 작성자가 `thumbnail:` 를 빈 값으로 적으면 base 값이 조용히 지워진다.
+위처럼 merge 전에 `stripEmpty()` 로 빈 키를 걷어내거나, locale 파일은 상속 필드를
+**비우지 말고 생략** 하라고 문서화할 것.
+
+→ 실행 가능: [`snippets/locale-content/resolve-locale-content.ts`](./snippets/locale-content/resolve-locale-content.ts).
+
+---
+
+## 4. 용어집 매칭 (Glossary Matching) — substring 의 함정
+
+### 4.1 현재 동작
 
 ```python
 haystack = text if case_sensitive else text.lower()
@@ -232,7 +315,7 @@ for src, lang_map in src_dict.items():
 장점: 빠르고 단순. CJK 처럼 단어 경계가 없는 언어에도 동작.
 단점: 영어에서 `"AI"` 가 `"said"`, `"again"` 에도 매칭. `"AI"` 와 `"AI Director"` 가 동시에 매칭.
 
-### 3.2 가능한 개선 (적용은 미정)
+### 4.2 가능한 개선 (적용은 미정)
 
 1. **언어별 분기**: 라틴 스크립트면 `\b{term}\b` 단어 경계 강제, CJK 면 substring 허용.
 2. **min_len 가드**: 1글자 용어는 노이즈가 많으니 무시 (`len(term) < 2` skip).
@@ -243,7 +326,7 @@ for src, lang_map in src_dict.items():
 레거시 `module/glossary.py` 의 `extract_glossary_terms_fuzzy` 는 (2)(4) 를 이미 했지만
 신규 `app/augmenters/glossary.py` 는 단순화하면서 빠짐. 필요하면 옮겨오면 됨.
 
-### 3.3 case sensitivity 전파 누락 (실제 버그)
+### 4.3 case sensitivity 전파 누락 (실제 버그)
 
 `GlossaryAugmenter.config_schema` 는 `case_sensitive` 옵션을 받지만,
 `resource_resolver._spec_for_glossary` 는 `file_ref` 만 spec 으로 전달한다. UI/Resource
@@ -252,9 +335,9 @@ for src, lang_map in src_dict.items():
 
 ---
 
-## 4. 파일 다운로드 — RFC 5987 Content-Disposition
+## 5. 파일 다운로드 — RFC 5987 Content-Disposition
 
-### 4.1 문제
+### 5.1 문제
 
 한글 파일명을 `Content-Disposition: attachment; filename="용어집.csv"` 로 넣으면
 브라우저별로:
@@ -262,7 +345,7 @@ for src, lang_map in src_dict.items():
 - Firefox: 깨진 파일명
 - Safari: 다운로드 거부 또는 mojibake
 
-### 4.2 해결
+### 5.2 해결
 
 RFC 5987 의 `filename*` 파라미터를 같이 보낸다.
 
@@ -277,7 +360,7 @@ function contentDisposition(name: string): string {
 - `filename=` 에는 ASCII 안전한 fallback (브라우저 호환)
 - `filename*=UTF-8''<percent-encoded>` 가 우선됨
 
-### 4.3 export 시 BOM 도 같이
+### 5.3 export 시 BOM 도 같이
 
 CSV/XLSX export 의 경우, "다운받아서 Excel 에서 열 것" 이 거의 확정이라 BOM 을 붙여서
 보낸다.
@@ -294,9 +377,9 @@ return new Response(csv, {
 
 ---
 
-## 5. 두 ORM, 한 Postgres — 경계 다루기
+## 6. 두 ORM, 한 Postgres — 경계 다루기
 
-### 5.1 구조
+### 6.1 구조
 
 같은 Postgres 인스턴스에 두 영역의 테이블이 공존:
 
@@ -315,7 +398,7 @@ Postgres
     └── ...
 ```
 
-### 5.2 원칙
+### 6.2 원칙
 
 - **마이그레이션 소유권**: 같은 테이블에 두 ORM 이 마이그레이션 걸지 않는다. 한쪽이
   소유 → 다른 쪽은 read-only (raw SQL) 로만 접근.
@@ -324,7 +407,7 @@ Postgres
 - **컬럼명 직접 노출 시**: SQLAlchemy 쪽에서 Prisma 의 camelCase 컬럼 (`"sourceText"`,
   `"externalId"`) 을 raw SQL 로 조회할 때 반드시 큰따옴표.
 
-### 5.3 정규화 vs JSON 컬럼 — 판단 기준
+### 6.3 정규화 vs JSON 컬럼 — 판단 기준
 
 이번 작업에서 augmenter contribution payload 를 어디 저장할지 결정한 기준:
 
@@ -342,23 +425,23 @@ Postgres
 
 ---
 
-## 6. 작업 시 주의사항 체크리스트
+## 7. 작업 시 주의사항 체크리스트
 
-### 6.1 다국어 텍스트 받기 전에
+### 7.1 다국어 텍스트 받기 전에
 
 - [ ] 어디서 디코딩되는가? (브라우저? 서버? 둘 다?)
 - [ ] 기본 인코딩 가정은 무엇인가? UTF-8 외 입력은 어떻게 처리?
 - [ ] BOM 처리는?
 - [ ] NFC/NFD 정규화 필요한가? (macOS 파일명, 한글 자모 분리)
 
-### 6.2 lang 코드 다룰 때
+### 7.2 lang 코드 다룰 때
 
 - [ ] base 코드 (`ko`)와 locale 코드 (`ko-KR`)가 같은 코드 경로에서 섞이는가?
 - [ ] alias 등록 또는 정규화 전략이 있는가?
 - [ ] `zh-CN` / `zh-TW` 같은 region 분리가 필요한 케이스를 다루는가?
 - [ ] 대소문자? underscore vs hyphen?
 
-### 6.3 용어 매칭 로직 만들 때
+### 7.3 용어 매칭 로직 만들 때
 
 - [ ] CJK 와 라틴 스크립트의 단어 경계 차이를 인지하는가?
 - [ ] 1글자 용어 노이즈 가드는?
@@ -366,32 +449,40 @@ Postgres
 - [ ] 정규화 단계(공백, 개행, HTML 태그) 있는가?
 - [ ] 성능: 용어 수 × 세그먼트 수 곱이 1M 넘어가면 자료구조 재고.
 
-### 6.4 파일 업로드/다운로드 만들 때
+### 7.4 파일 업로드/다운로드 만들 때
 
 - [ ] 업로드: 원시 바이트로 받고 인코딩 감지 후 디코딩 (브라우저는 `File.text()` 금지)
 - [ ] 다운로드: `Content-Disposition` 에 `filename*=UTF-8''...` 같이
 - [ ] Excel 호환 export 면 BOM 붙이기
 - [ ] presigned URL 사용 시 Content-Type 매칭
 
-### 6.5 두 DB 경계 작업할 때
+### 7.5 두 DB 경계 작업할 때
 
 - [ ] 마이그레이션 소유권은 명확한가?
 - [ ] 한쪽이 캐싱한 데이터의 stale 검증 시점은?
 - [ ] publish/sync 작업이 idempotent 인가? (재실행 안전)
 - [ ] 트랜잭션 경계가 두 영역에 걸치는가? (FastAPI 쓰고 Next 가 후처리면 부분 실패 처리)
 
-### 6.6 평가/디버깅 데이터 저장할 때
+### 7.6 평가/디버깅 데이터 저장할 때
 
 - [ ] 정규화 가치가 있는가? (분석, 인덱싱, 통계)
 - [ ] payload 크기는? (row 당 KB 단위면 정규화 다시 고려)
 - [ ] retention 정책은? (Job 결과 90일 후 삭제 등)
 - [ ] PII 포함 가능성은?
 
+### 7.7 locale별 콘텐츠 파일 resolve 할 때
+
+- [ ] locale 변종(`*.en.mdx`)이 base 목록에서 제외되는가?
+- [ ] 변종이 없으면 base 파일로 폴백하는가?
+- [ ] frontmatter 는 필드 단위 merge, 본문은 통째로 교체인가?
+- [ ] base 파생 필드(썸네일, 읽기 시간)를 merge 결과가 아니라 base 에서 다시 계산하는가?
+- [ ] 변종의 빈 값이 멀쩡한 base 값을 덮어쓰지 않는가?
+
 ---
 
-## 7. 자주 쓰는 코드 조각
+## 8. 자주 쓰는 코드 조각
 
-### 7.1 인코딩 자동 감지 (Browser)
+### 8.1 인코딩 자동 감지 (Browser)
 
 ```ts
 async function readTextSmart(file: File): Promise<string> {
@@ -408,7 +499,7 @@ async function readTextSmart(file: File): Promise<string> {
 }
 ```
 
-### 7.2 인코딩 자동 감지 (Python, charset-normalizer)
+### 8.2 인코딩 자동 감지 (Python, charset-normalizer)
 
 ```python
 from charset_normalizer import from_bytes
@@ -433,7 +524,7 @@ except UnicodeDecodeError:
     text = raw.decode("cp949")
 ```
 
-### 7.3 lang 코드 alias
+### 8.3 lang 코드 alias
 
 ```python
 def lang_aliases(lang: str) -> list[str]:
@@ -442,7 +533,7 @@ def lang_aliases(lang: str) -> list[str]:
     return [norm, base] if base and base != norm else [norm]
 ```
 
-### 7.4 RFC 5987 Content-Disposition
+### 8.4 RFC 5987 Content-Disposition
 
 ```ts
 function contentDisposition(filename: string): string {
@@ -454,7 +545,7 @@ function contentDisposition(filename: string): string {
 }
 ```
 
-### 7.5 UTF-8 BOM 붙여 CSV export
+### 8.5 UTF-8 BOM 붙여 CSV export
 
 ```ts
 return new Response("﻿" + csvBody, {
@@ -465,9 +556,26 @@ return new Response("﻿" + csvBody, {
 });
 ```
 
+### 8.6 locale별 콘텐츠 resolve (base 폴백 + 부분 override)
+
+```ts
+function getPost(slug: string, locale: string): Post {
+  const base = parseBase(`${slug}.mdx`);                 // 항상 존재
+  if (locale === DEFAULT_LOCALE) return base;
+  const variantPath = `${slug}.${locale}.mdx`;
+  if (!existsSync(variantPath)) return base;             // 변종 없으면 base
+  const variant = matter(readFileSync(variantPath, "utf-8"));
+  return {
+    ...base,                                             // 썸네일 등 base 파생값 유지
+    frontmatter: { ...base.frontmatter, ...stripEmpty(variant.data) },
+    content: variant.content,                            // 본문은 통째로 교체
+  };
+}
+```
+
 ---
 
-## 8. 실제로 부딪힌 이슈 타임라인 (translation-eval)
+## 9. 실제로 부딪힌 이슈 타임라인 (translation-eval)
 
 | 커밋 | 무엇이 깨졌나 | 어떻게 고쳤나 |
 |------|--------------|---------------|
@@ -480,14 +588,14 @@ return new Response("﻿" + csvBody, {
 | `ac0260e` | xlsx 입력 미지원 | wizard 가 첫 시트 자동 파싱 |
 | `21ae7bd` | CSV 컬럼이 `한국어` 같은 자유 헤더 | per-column 매핑 UI + AI 자동 매핑 |
 
-각 항목은 위 1~5장 어느 한 챕터의 변종.
+각 항목은 위 1·2·4·5·6장 어느 한 챕터의 변종 (3장은 다른 프로젝트 출처).
 
 ---
 
-## 9. 안 한 것 / 미해결
+## 10. 안 한 것 / 미해결
 
-- 글로서리 substring 매칭의 단어경계 가드 (#3.2)
-- `case_sensitive` 옵션 spec 전달 (#3.3)
+- 글로서리 substring 매칭의 단어경계 가드 (#4.2)
+- `case_sensitive` 옵션 spec 전달 (#4.3)
 - 최장 매칭 우선순위
 - retrieval / graph payload 의 S3 ref 저장
 - NFD/NFC 정규화 (현재까지 문제 없음)
@@ -495,7 +603,7 @@ return new Response("﻿" + csvBody, {
 
 ---
 
-## 10. 디버깅 명령 모음
+## 11. 디버깅 명령 모음
 
 ### 파일 인코딩 의심될 때
 
@@ -546,7 +654,7 @@ for enc in ["latin-1", "cp1252", "cp949", "utf-8"]:
 
 ---
 
-## 11. 참고 자료
+## 12. 참고 자료
 
 - [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/) — `TextDecoder` 지원 인코딩 목록
 - [RFC 5987](https://datatracker.ietf.org/doc/html/rfc5987) — Content-Disposition 다국어 파일명
