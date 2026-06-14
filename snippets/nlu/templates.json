@@ -1,0 +1,20 @@
+{
+  "slots": {
+    "item":  {"en": ["sword", "shield", "potion"], "ko": ["검", "방패", "물약"]},
+    "count": {"en": ["two", "three"], "ko": ["두 개", "세 개"]}
+  },
+  "intents": {
+    "buy_item": {
+      "en": ["buy {count} {item}", "purchase a {item}"],
+      "ko": ["{item} {count} 구매", "{item} 사줘"]
+    },
+    "equip_item": {
+      "en": ["equip the {item}", "wield my {item}"],
+      "ko": ["{item} 장착", "{item} 착용해줘"]
+    },
+    "greeting": {
+      "en": ["hello", "hi there"],
+      "ko": ["안녕", "반가워"]
+    }
+  }
+}
