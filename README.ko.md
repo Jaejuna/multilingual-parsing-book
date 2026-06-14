@@ -7,6 +7,38 @@
 파이프라인을 다루며 정리한 함정과 해결 패턴을 한곳에 모은 문서. 다른 프로젝트로 가지고 가도
 독립적으로 읽힐 수 있도록 self-contained 형태로 정리.
 
+## 목차
+
+0. [시스템 한눈에 — 어디서 무엇이 깨지는가](#0-시스템-한눈에--어디서-무엇이-깨지는가)
+1. [인코딩 — 한국 Excel CSV 함정](#1-인코딩-encoding--한국-excel-csv-함정)
+2. [언어 코드 — locale vs base 불일치](#2-언어-코드-lang-code--locale-vs-base-불일치)
+3. [locale별 콘텐츠 파일 — frontmatter 부분 폴백](#3-locale별-콘텐츠-파일--frontmatter-부분-폴백)
+4. [용어집 매칭 — substring 의 함정](#4-용어집-매칭-glossary-matching--substring-의-함정)
+5. [파일 다운로드 — RFC 5987 Content-Disposition](#5-파일-다운로드--rfc-5987-content-disposition)
+6. [두 ORM, 한 Postgres — 경계 다루기](#6-두-orm-한-postgres--경계-다루기)
+
+**Part II — ML 을 위한 데이터셋 엔지니어링**
+
+7. [코퍼스를 데이터로 감사하기](#7-코퍼스를-데이터로-감사하기)
+8. [같은 지표를 pandas 방식으로](#8-같은-지표를-pandas-방식으로)
+9. [용어집 준수율 — 피드백 루프 닫기](#9-용어집-준수율--피드백-루프-닫기)
+10. [매처 변경을 A/B 테스트하기](#10-매처-변경을-ab-테스트하기)
+11. [용어집에서 렉시콘 / 지식 그래프로](#11-용어집에서-렉시콘--지식-그래프로)
+12. [언어 형평성 — 책임 있는 AI 스크린](#12-언어-형평성--책임-있는-ai-스크린)
+13. [NLU intent + slot 데이터셋 구축](#13-nlu-intent--slot-데이터셋-구축)
+14. [같은 지표를 SQL 로](#14-같은-지표를-sql-로)
+15. [RAM 에 안 들어가는 코퍼스로 확장하기](#15-ram-에-안-들어가는-코퍼스로-확장하기)
+
+**부록 (Appendix)**
+
+- A. [작업 시 주의사항 체크리스트](#a-작업-시-주의사항-체크리스트)
+- B. [스니펫 인덱스](#b-스니펫-인덱스)
+- C. [디버깅 명령 모음](#c-디버깅-명령-모음)
+- D. [참고 자료](#d-참고-자료)
+- E. [자주 쓰는 코드 조각](#e-자주-쓰는-코드-조각)
+- F. [실제로 부딪힌 이슈 타임라인 (translation-eval)](#f-실제로-부딪힌-이슈-타임라인-translation-eval)
+- G. [안 한 것 / 미해결](#g-안-한-것--미해결)
+
 ---
 
 ## 0. 시스템 한눈에 — 어디서 무엇이 깨지는가
@@ -425,23 +457,312 @@ Postgres
 
 ---
 
-## 7. 작업 시 주의사항 체크리스트
+# Part II — ML 을 위한 데이터셋 엔지니어링
 
-### 7.1 다국어 텍스트 받기 전에
+Part I 은 *파싱 버그* 에 관한 것이다 — 결함 하나, 수정 하나. 한 레이어 위의 작업은
+지저분한 다국어 입력을 ML 시스템이 소비하는 **데이터셋·지표·피드백 루프** 로 바꾸는
+일이다. Part II 는 그 레이어이며, Part I 과 정확히 같은 primitive 위에 쌓여 있다
+(인코딩 규율 #1, lang 코드 alias #2, 스크립트 인지 매칭 #4).
+
+여기 나오는 모든 도구는 **stdlib 만 사용** 하고, 기본으로 Markdown 리포트를 출력하며
+(`--format json` 으로 기계용 출력), findings 가 있으면 non-zero 로 종료한다(즉 CI 게이트로
+동작). 또 결함을 심어둔 샘플과, 그 결함이 잡히는 것을 증명하는 pytest 를 함께 제공한다.
+스위트는 `snippets/` 에서 실행한다:
+
+```bash
+python -m pytest tests/ -q      # 16 tests
+```
+
+## 7. 코퍼스를 데이터로 감사하기
+
+Part I 은 결함을 하나씩 찾는다. 운영에서는 결코 그런 식으로 들어오지 않는다.
+벤더 CSV 하나가 cp949 바이트로, `ko`/`ko-KR` 헤더가 섞인 채, 일본어 컬럼은 절반이
+비어 있고, `{player_name}` 이 "번역되어" 버린 row 가 세 개 있는 상태로 도착한다.
+[`audit_corpus.py`](./snippets/dataset-quality/audit_corpus.py) 는 **한 번의 패스** 로
+이 모두를 row 단위 포인터와 함께 리포트한다. 그래서 데이터 소유자가 소스를 고치게 되고,
+당신이 하류에서 증상을 땜질하지 않게 된다.
+
+wide-format 코퍼스(언어당 컬럼 하나) 위에서 다음을 계산한다:
+
+| 체크 | 연결되는 곳 |
+|------|--------------|
+| 사용된 인코딩 (utf-8 vs cp949), mojibake 셀, U+FFFD | #1 |
+| not-NFC 셀 (자모 분리 한글) | #1.4 |
+| 혼재된 lang 코드 표기 (`ko` vs `ko-KR`) | #2 |
+| 언어별 커버리지 / 누락 번역 | #4 |
+| 중복 키 & 소스 값 | — |
+| 언어 간 placeholder parity (`{0}`, `%s`, `<br>`) | — |
+| base 컬럼 대비 길이 비율 이상치 | — |
+
+```bash
+python audit_corpus.py sample_corpus.csv          # markdown report, exit 1 if dirty
+python audit_corpus.py corpus.csv --format json --out report
+```
+
+감사 도구는 이 책이 설파하는 바를 그대로 실천한다: `utf-8-sig` 로 읽고 cp949 로 폴백하며
+(#1.5), `lang_aliases` 규칙을 재사용한다(#2).
+
+같은 코퍼스 지표를 대비를 위해 다른 두 방식으로도 표현한다 — pandas (#8) 와 SQL (#14).
+그래서 도구 선택이 기본값이 아니라 의도적인 결정이 된다.
+
+## 8. 같은 지표를 pandas 방식으로
+
+7장은 코퍼스 품질을 표준 라이브러리로 계산했고, #14 는 SQL 로 계산한다. 이것은 세 번째
+관점이다: 데이터 분석의 lingua franca 인 pandas. 여기서 보여주는 능력은 pandas 자체가
+아니라 — *어떤* 도구가 질문에 맞는지 아는 것이다.
+
+| 관점 | 이럴 때 꺼낸다 | 비용 |
+|------|-------------------|------|
+| stdlib (#7) | 의존성 0, 스트리밍 가능한 drop-in | 장황함 |
+| pandas (여기) | 탐색적 분석, 노트북, 즉석 pivot | 전부 RAM 에 적재 |
+| SQL (#14) | 데이터가 이미 Postgres 에 있음 | round-trip |
+
+### 루프가 아니라 벡터화
+
+stdlib 감사 도구는 `Counter` 로 row 를 순회한다. pandas 는 같은 질문을 컬럼 전체 연산으로
+표현한다:
+
+```python
+nonempty = cells.replace("", pd.NA).notna()
+coverage = nonempty.mean()                       # fill rate per language
+dup_keys = df[key].str.strip().duplicated().sum()
+```
+
+### parity 가 곧 계약
+
+known-good 베이스라인과 대조할 수 없는 도구는 쓸모없다. 그래서 테스트는 pandas 관점이
+같은 샘플 위에서 #7 과 *같은 숫자* 를 돌려주는지 단언한다
+(`test_pandas_parity_with_stdlib_audit`):
+
+```
+coverage ja_JP: stdlib=0.875  pandas=0.875
+dup_keys:       stdlib=1      pandas=1
+len_outliers:   stdlib=2      pandas=2      PARITY: ALL MATCH
+```
+
+### 벡터화 함정
+
+parity 를 맞추는 데 수정 하나가 필요했다. 빈 타깃 셀은 길이가 0 이고, `0 / base` 는 비율
+0 이 된다 — 이상치 규칙은 이를 "터무니없이 짧음" 으로 읽고 플래그한다. stdlib 루프는 없는
+셀을 건너뛰었지만, 벡터화 버전은 조용히 그것을 셌다. 수정은 빈 값을 `NA` 로 매핑해 누락
+셀이 중앙값과 mask 양쪽에서 빠지게 한다:
+
+```python
+tgt_len = cells.str.len().replace(0, pd.NA)      # empty -> NA, not 0
+```
+
+교훈: 벡터화 코드는 빠르지만 "missing vs zero vs empty" 를 대신 처리해주지 않는다 — 그
+구분이 진짜 pandas 작업의 핵심이지, API 암기가 아니다.
+
+### pandas 가 틀린 선택일 때
+
+- 데이터가 RAM 에 안 들어감 -> 뒤에 나올 스케일링 장은 polars(lazy) / duckdb(out-of-core)
+  를 쓴다. pandas 는 OOM 난다
+- 의존성 0 의 drop-in 이 필요함 -> #7 stdlib
+- 데이터가 이미 웨어하우스에 있음 -> #14 SQL
+
+실행 가능: [`snippets/pandas/corpus_metrics_pandas.py`](./snippets/pandas/corpus_metrics_pandas.py).
+
+## 9. 용어집 준수율 — 피드백 루프 닫기
+
+용어집을 배포하는 건 *입력* 이다. 제품이 실제로 신경 쓰는 질문은 *결과* 다: 모델이 그것을
+썼는가? [`glossary_adherence.py`](./snippets/glossary-eval/glossary_adherence.py) 는
+소스 텍스트, MT 출력, 용어집을 받아서, 세그먼트 × 언어마다 소스에 있는 용어집 용어가
+출력에서 그 강제된 번역을 만들어냈는지 검사한다.
+
+```
+| language | applicable | applied | adherence |
+| ja       | 7          | 4       | 57.1% ⚠️  |   ← actionable: top misses listed
+| zh-CN    | 7          | 6       | 85.7%     |
+| ko       | 7          | 7       | 100.0%    |
+```
+
+이것은 #4 의 평가 쌍둥이다: #4 는 *주입할* 용어를 찾고, 이것은 주입된 용어가 *살아남았는지*
+측정한다. 매칭은 스크립트 인지 방식 — 라틴은 `\b`, CJK 는 substring(#4.2). 유창성은
+**판단하지 않는다**; 그건 별도의 LLM-as-judge 도구이며 의도적으로 범위 밖이다.
+
+## 10. 매처 변경을 A/B 테스트하기
+
+README #4 는 매칭 전략을 산문으로 나열하는데, 거기서 나쁜 결정이 숨는다. 운영 매처를
+교체하기 전에 제품에 숫자 하나를 보여줘야 한다.
+[`strategy_ab.py`](./snippets/experiments/strategy_ab.py) 는 각 전략을 **라벨링된 gold
+set** 위에서 돌리고 precision / recall / F1 을 리포트한다:
+
+```
+| strategy            | precision | recall | F1     | FP | FN |
+| word_boundary 🏆    | 100.0%    | 100.0% | 100.0% | 0  | 0  |
+| word_boundary+min3  | 100.0%    | 71.4%  | 83.3%  | 0  | 2  |
+| substring           | 63.6%     | 100.0% | 77.8%  | 4  | 0  |
+```
+
+이제 트레이드오프가 보인다: substring 은 과다 발화하고(`Said` 안의 `AI`), min-length 가드는
+2글자 용어를 죽인다(`AI`, `OK`). 이것이 "제품 실험을 설계하고 수행하는" 근육이다: 고정된
+control set, 후보 variant, 하나의 지표, 하나의 승자.
+
+## 11. 용어집에서 렉시콘 / 지식 그래프로
+
+플랫 용어집은 "X 를 일본어로 어떻게 말하나" 에만 답하고 그 이상은 못 한다. "어떤 용어가
+COMBAT 도메인에 있나" 또는 "戦利品 이 주어졌을 때 그게 무슨 개념이고 그 모든 라벨은
+무엇인가" 가 필요해지는 순간, 그래프가 필요하다.
+[`build_lexicon.py`](./snippets/knowledge-graph/build_lexicon.py) 는 플랫 CSV 를
+SKOS/lexinfo 스타일 트리플을 가진 개념 그래프로 올린다:
+
+```
+concept:loot skos:prefLabel "loot"@en .
+concept:loot skos:prefLabel "戦利品"@ja .
+concept:loot dct:subject domain:Combat .
+concept:loot skos:broader concept:item .
+```
+
+…더해서 역인덱스도 만든다: 어떤 언어의 어떤 표면형이든 → 그 개념 → 다른 모든 라벨. 그
+cross-lingual lookup 이야말로 렉시콘 기반 NLU 레이어나 용어집 augmenter 가 소비하는 것이다.
+
+```bash
+python build_lexicon.py glossary_lex.csv --lookup 戦利品   # -> concept 'loot' + all labels
+python build_lexicon.py glossary_lex.csv --format triples --out lexicon
+```
+
+## 12. 언어 형평성 — 책임 있는 AI 스크린
+
+집계된 품질 숫자는 격차를 숨긴다: "커버리지 92%" 는 모든 언어가 92% 라는 뜻일 수도,
+영어가 100% 이고 다섯 언어가 70% 라는 뜻일 수도 있다.
+[`coverage_bias.py`](./snippets/responsible-ai/coverage_bias.py) 는 언어별로 분해하고
+라벨 없는 프록시로 불평등을 플래그한다 — 커버리지, copy-through(타깃 == 소스),
+너무 짧은 stub — 그런 다음 스프레드(최고 대비 격차, 변동계수)를 리포트한다:
+
+```
+- coverage gap (best − worst): 50.0% ⚠️
+## ⚠️ Underserved languages (>10pp below best)
+- `th` — coverage 50.0%; prioritize for data collection
+```
+
+샘플은 RTL(아랍어, 히브리어)과 인도계(힌디어) 컬럼을 포함한다. 도구는 또 **자기 지표를
+경계한다**: char-length 비교는 밀집 스크립트(CJK)를 과다 플래그하므로, `too-short` 은
+within-script 스크린이지 판정이 아니다 — 지표에 대한 자기 인식이 책임 있는 AI 리뷰의
+일부다.
+
+## 13. NLU intent + slot 데이터셋 구축
+
+음성 비서 NLU 모델은 라벨링된 발화가 필요하다: 각각 intent 와 slot 스팬으로 태깅된다.
+언어당 수천 개를 손으로 쓰면 일관성 없는 offset 과 한쪽으로 치우친 클래스 밸런스를
+보장한다. [`build_intent_dataset.py`](./snippets/nlu/build_intent_dataset.py) 는
+템플릿 × slot 값을 조합적으로 확장하고 **문자 스팬을 자동 계산** 한다. 그래서 라벨이 항상
+정확하다 — CJK 포함:
+
+```jsonl
+{"lang":"en","intent":"buy_item","text":"buy two sword",
+ "slots":[{"name":"count","value":"two","start":4,"end":7},
+          {"name":"item","value":"sword","start":8,"end":13}]}
+```
+
+또한 클래스 밸런스를 리포트하고 얇은 `(lang, intent)` 셀에 경고한다. 책의 나머지에 대한
+ASR/NLU 쪽 보완물이다.
+
+## 14. 같은 지표를 SQL 로
+
+데이터가 이미 Postgres 에 안착했다면, export 하지 말고 — 쿼리한다.
+[`quality_metrics.sql`](./snippets/sql/quality_metrics.sql) 는 Part II 지표를 #6 의
+평가 스키마에 대해 표현한다: 언어별 용어집 준수율, 최고 대비 격차가 붙은 언어별 커버리지
+(윈도우 함수), lang 코드 표기 drift(#2), mojibake 스크린(#1), copy-through 탐지, 그리고
+JSONB `augmenter_log` 로부터의 augmenter 건강도. Prisma 의 camelCase 컬럼은 전부
+큰따옴표로 감쌌다(#6.2).
+
+## 15. RAM 에 안 들어가는 코퍼스로 확장하기
+
+Part II 도구는 `rows = list(reader)` 로 코퍼스 전체를 적재하고 `for term in terms` 루프로
+용어를 매칭한다. 둘 다 벤더 CSV 에는 괜찮지만, 코퍼스가 수백만 row 에 도달하면 둘 다
+무너진다. 이 장은 각각을 확장되는 기법으로 교체한다 — 그리고 이 책의 정신대로, 형용사가
+아니라 숫자로 증명한다.
+
+### 시간: Aho-Corasick vs 나이브 루프
+
+나이브 루프는 모든 세그먼트마다 모든 용어를 재스캔한다 — O(terms × text). Aho-Corasick
+automaton 은 모든 용어를 한 번 컴파일하고 단일 패스를 한다 — O(text + matches), 용어 수와
+무관.
+
+```
+| terms | naive (ms) | AC search (ms) | search speed-up | counts agree |
+|    50 |        8.5 |           12.1 |            0.7x | yes |
+|   200 |       46.0 |           18.0 |            2.6x | yes |
+|  1000 |      150.7 |           14.6 |           10.3x | yes |
+|  5000 |      912.7 |           26.6 |           34.4x | yes |
+```
+
+정직한 crossover 에 주목하라: 50개 용어에서는 나이브 루프가 *이긴다* — automaton 의
+build/오버헤드가 아직 상각되지 않았다. 5,000개 용어에 이르면 Aho-Corasick 은 약 34배
+빠르고 검색 시간은 거의 평평하게 유지된다. crossover 를 지난 뒤에만 꺼내고, 반사적으로
+쓰지 말 것. 실행 가능: [`snippets/benchmark/bench_matching.py`](./snippets/benchmark/bench_matching.py).
+
+### 메모리: Welford vs load-everything
+
+대부분의 체크는 trivial 하게 스트리밍된다: row 를 읽고, 카운터를 올리고, row 를 버린다.
+예외는 길이 비율 이상치(#7) 인데, 이건 *중앙값* 이 필요하고 — 중앙값은 모든 값을 한꺼번에
+요구한다. Welford 의 online 알고리즘이 그것을 우회한다: running mean 과 variance 를 O(1)
+메모리로 유지해, 이상치를 z-score 로 단일 패스에서 플래그한다.
+
+```
+| rows      | load peak (KB) | stream peak (KB) |
+|    10,000 |            725 |                0 |
+|   100,000 |          3,129 |                0 |
+| 1,000,000 |         31,691 |                0 |
+```
+
+load-everything 의 peak 메모리는 row 수와 함께 오르지만, 스트리밍 peak 은 평평하다 —
+얼마나 많은 row 가 지나가든 float 세 개. 실행 가능:
+[`snippets/benchmark/stream_vs_load.py`](./snippets/benchmark/stream_vs_load.py).
+
+진짜로 O(1) 이 될 수 없는 단 하나의 체크는 **정확한 중복 탐지** 다 — 본 키를 전부 기억해야
+한다. 그 경계에 대해 정직할 것: O(distinct keys) 메모리를 받아들이거나, 먼저 외부 정렬을
+하거나, 근사 자료구조(Bloom filter)를 쓴다. stateful 체크를 stateless 인 척하지 말 것.
+
+### 한 머신을 넘어서: 컬럼형 엔진
+
+RAM 에 안 들어가는 데이터 위에서 진짜 분석 쿼리(group-by, join, percentile)를 원할 때는,
+스트리밍 aggregator 를 손으로 짜는 걸 멈추고 디스크에서 스트리밍하는 컬럼형 엔진을
+꺼내라 — DuckDB(파일 위 SQL) 또는 polars(lazy DataFrame). 이것은 #8(pandas) 과 #14(SQL)
+의 운영 단계 확장이다:
+
+```python
+duckdb.execute('''
+  SELECT lang, AVG(CASE WHEN trim(text) <> '' THEN 1.0 ELSE 0 END) AS coverage
+  FROM read_csv(?, header=true) GROUP BY lang''', [path])   # streams from disk
+```
+
+[`snippets/scale/out_of_core.py`](./snippets/scale/out_of_core.py) 는 같은 커버리지를 세
+방식으로 계산하고 — stdlib 스트림, DuckDB, polars lazy — 그것들이 일치하는지 단언한다.
+DuckDB/polars 는 선택적 무거운 의존성이다(#4 의 `pyahocorasick` 처럼); stdlib 경로는
+항상 실행된다.
+
+### 결정 규칙
+
+| 상황 | 꺼낼 것 |
+|-----------|-----------|
+| 용어 수 crossover 를 지남 | Aho-Corasick (#4) |
+| 스트리밍 통계, 단일 패스 | Welford z-score (중앙값 말고) |
+| RAM 보다 큼 + 분석 쿼리 | DuckDB / polars |
+| 아직 RAM 에 들어감 | 더 단순한 #7 / #8 도구 |
+
+---
+
+# 부록 (Appendix)
+
+## A. 작업 시 주의사항 체크리스트
+
+### A.1 다국어 텍스트 받기 전에
 
 - [ ] 어디서 디코딩되는가? (브라우저? 서버? 둘 다?)
 - [ ] 기본 인코딩 가정은 무엇인가? UTF-8 외 입력은 어떻게 처리?
 - [ ] BOM 처리는?
 - [ ] NFC/NFD 정규화 필요한가? (macOS 파일명, 한글 자모 분리)
 
-### 7.2 lang 코드 다룰 때
+### A.2 lang 코드 다룰 때
 
 - [ ] base 코드 (`ko`)와 locale 코드 (`ko-KR`)가 같은 코드 경로에서 섞이는가?
 - [ ] alias 등록 또는 정규화 전략이 있는가?
 - [ ] `zh-CN` / `zh-TW` 같은 region 분리가 필요한 케이스를 다루는가?
 - [ ] 대소문자? underscore vs hyphen?
 
-### 7.3 용어 매칭 로직 만들 때
+### A.3 용어 매칭 로직 만들 때
 
 - [ ] CJK 와 라틴 스크립트의 단어 경계 차이를 인지하는가?
 - [ ] 1글자 용어 노이즈 가드는?
@@ -449,28 +770,28 @@ Postgres
 - [ ] 정규화 단계(공백, 개행, HTML 태그) 있는가?
 - [ ] 성능: 용어 수 × 세그먼트 수 곱이 1M 넘어가면 자료구조 재고.
 
-### 7.4 파일 업로드/다운로드 만들 때
+### A.4 파일 업로드/다운로드 만들 때
 
 - [ ] 업로드: 원시 바이트로 받고 인코딩 감지 후 디코딩 (브라우저는 `File.text()` 금지)
 - [ ] 다운로드: `Content-Disposition` 에 `filename*=UTF-8''...` 같이
 - [ ] Excel 호환 export 면 BOM 붙이기
 - [ ] presigned URL 사용 시 Content-Type 매칭
 
-### 7.5 두 DB 경계 작업할 때
+### A.5 두 DB 경계 작업할 때
 
 - [ ] 마이그레이션 소유권은 명확한가?
 - [ ] 한쪽이 캐싱한 데이터의 stale 검증 시점은?
 - [ ] publish/sync 작업이 idempotent 인가? (재실행 안전)
 - [ ] 트랜잭션 경계가 두 영역에 걸치는가? (FastAPI 쓰고 Next 가 후처리면 부분 실패 처리)
 
-### 7.6 평가/디버깅 데이터 저장할 때
+### A.6 평가/디버깅 데이터 저장할 때
 
 - [ ] 정규화 가치가 있는가? (분석, 인덱싱, 통계)
 - [ ] payload 크기는? (row 당 KB 단위면 정규화 다시 고려)
 - [ ] retention 정책은? (Job 결과 90일 후 삭제 등)
 - [ ] PII 포함 가능성은?
 
-### 7.7 locale별 콘텐츠 파일 resolve 할 때
+### A.7 locale별 콘텐츠 파일 resolve 할 때
 
 - [ ] locale 변종(`*.en.mdx`)이 base 목록에서 제외되는가?
 - [ ] 변종이 없으면 base 파일로 폴백하는가?
@@ -480,9 +801,127 @@ Postgres
 
 ---
 
-## 8. 자주 쓰는 코드 조각
+## B. 스니펫 인덱스
 
-### 8.1 인코딩 자동 감지 (Browser)
+위의 모든 패턴은 [`snippets/`](./snippets/) 에 실행 가능한 대응물이 있다. 파일 하나를 골라
+다른 프로젝트에 그대로 떨어뜨려 쓰면 된다 — self-contained.
+
+| 증상 | 스니펫 |
+|---------|---------|
+| 브라우저로 업로드한 한글 CSV → S3 에서 mojibake | [`encoding/read-text-smart.browser.ts`](./snippets/encoding/read-text-smart.browser.ts) |
+| 같은 문제, Python 백엔드가 로컬 파일 읽기 | [`encoding/read_text_smart.py`](./snippets/encoding/read_text_smart.py) |
+| export 한 CSV 가 Excel 에서 깨짐 | [`encoding/csv-export-with-bom.ts`](./snippets/encoding/csv-export-with-bom.ts) |
+| 화면에 mojibake, 그 출처를 알고 싶음 | [`debug/mojibake_trace.py`](./snippets/debug/mojibake_trace.py) |
+| 용어집 CSV 는 `ko-KR`, Job 은 `ko` (0 매칭) | [`lang-codes/lang_aliases.py`](./snippets/lang-codes/lang_aliases.py) |
+| 여러 lang-tag 표기가 DB 를 오염시킴 | [`lang-codes/normalize_lang.py`](./snippets/lang-codes/normalize_lang.py) |
+| `*.en.mdx` 가 중복 글로 뜸 / EN 글이 썸네일을 잃음 | [`locale-content/resolve-locale-content.ts`](./snippets/locale-content/resolve-locale-content.ts) |
+| 매처가 "Said" 안의 "AI" 를 잡음 | [`glossary-matching/word_boundary_match.py`](./snippets/glossary-matching/word_boundary_match.py) |
+| 용어 수천 개에서 용어 루프가 너무 느림 | [`glossary-matching/aho_corasick_match.py`](./snippets/glossary-matching/aho_corasick_match.py) |
+| Firefox/Safari 다운로드에서 한글 파일명 깨짐 | [`download/content-disposition-rfc5987.ts`](./snippets/download/content-disposition-rfc5987.ts) |
+| 큰 CSV export 가 timeout | [`download/streaming-csv-export.ts`](./snippets/download/streaming-csv-export.ts) |
+| 빠른 분류: "이 파일 인코딩이 뭐지?" | [`debug/inspect-file-encoding.ps1`](./snippets/debug/inspect-file-encoding.ps1) / [`.sh`](./snippets/debug/inspect-file-encoding.sh) |
+| 스케일에서 용어 루프가 너무 느림 — crossover 증명 | [`benchmark/bench_matching.py`](./snippets/benchmark/bench_matching.py) |
+| 코퍼스가 RAM 에 안 들어감 — 스트리밍(O(1)) vs load | [`benchmark/stream_vs_load.py`](./snippets/benchmark/stream_vs_load.py) |
+| RAM 보다 큼 + 분석 쿼리 (DuckDB/polars) | [`scale/out_of_core.py`](./snippets/scale/out_of_core.py) |
+| 이 책을 만들며 부딪힌 버그 재현 | [`debug/error_cases.py`](./snippets/debug/error_cases.py) |
+
+### Field notes — 이 책을 만들며 부딪힌 버그
+
+이 책의 모든 함정은 실제로 배포되고, 부딪히고, 고쳐졌다. Part II 를 만드는 것도 예외가
+아니었고, 우리가 부딪힌 여러 버그는 이 책 *자신의* 교훈이 되받아친 것이었다. 각각은
+실행 가능하게 재현되어 있다(깨진 동작 옆에 수정) —
+[`snippets/debug/error_cases.py`](./snippets/debug/error_cases.py).
+
+1. **#1 을 증명한 콘솔.** 도구가 리포트를 출력할 때
+   `UnicodeEncodeError: 'cp949' codec can't encode '—'` — Windows 콘솔이 cp949 다. 수정:
+   `sys.stdout.reconfigure(encoding="utf-8")`, 이제 모든 Part II CLI 에 들어가 있다.
+2. **mojibake 를 놓친 mojibake 정규식.** 첫 패턴은 `Ã`/`Â` 선두만 매칭했지만,
+   Korean-UTF-8-as-latin1 은 `ë`(U+00EB)에서 시작한다. 수정: 진짜 시그니처를 매칭 —
+   선두 U+00C2–00F4 + 연속 U+0080–00BF.
+3. **dataclasses + importlib.** 경로로 도구를 로드하니 `AttributeError: 'NoneType'
+   object has no attribute '__dict__'` 발생 — `@dataclass` 는 annotation 을
+   `sys.modules[cls.__module__]` 로 resolve 한다. 수정: `exec_module` 전에
+   `sys.modules` 에 등록.
+4. **pandas 가 빈 셀을 이상치로 셈.** 빈 셀의 길이 0 은 비율 0 을 주고 → 거짓 "too-short"
+   (#8). 수정: 비율 전에 빈 값 → `NA` 매핑.
+5. **polars 가 "" 를 null 로 읽음.** null 로 만든 boolean 이 group mean 을 왜곡한다.
+   수정: 먼저 `fill_null("")`.
+6. **충분히 랜덤하지 않은 LCG.** 그 *낮은* 비트가 6-언어 사이클과 상관되어 → 퇴화된 0/1
+   커버리지. 수정: *높은* 비트를 쓴다.
+7. **두 Python 프로세스 사이의 파이핑.** surrogate-escape 된 바이트가 파이프를 가로질러
+   샜다(`'\udceb' ... surrogates not allowed`). 수정: 한 프로세스로, 또는 둘 다
+   `PYTHONIOENCODING` — 인코딩 경계(#1)는 당신 자신의 프로세스 사이에도 존재한다.
+
+---
+
+## C. 디버깅 명령 모음
+
+### 파일 인코딩 의심될 때
+
+```powershell
+# PowerShell — 첫 바이트들 보기
+$bytes = [System.IO.File]::ReadAllBytes("path.csv")
+$bytes[0..20] | ForEach-Object { "{0:X2}" -f $_ }
+# 0xEF 0xBB 0xBF → UTF-8 BOM
+# 0xE0~ 3바이트 한글 → UTF-8
+# 0x80~0xFE 2바이트 한글 → cp949
+```
+
+```bash
+# Unix
+file path.csv                       # 인코딩 추정
+hexdump -C path.csv | head -2       # 첫 바이트 확인
+iconv -f cp949 -t utf-8 in.csv > out.csv  # 변환
+```
+
+→ 미리 만든 스크립트: [`snippets/debug/inspect-file-encoding.ps1`](./snippets/debug/inspect-file-encoding.ps1) 와 [`.sh`](./snippets/debug/inspect-file-encoding.sh).
+
+### 글로서리 매칭이 비었을 때
+
+```sql
+-- Job 의 source/target lang 확인
+SELECT id, config_snapshot->>'source_lang' FROM translation_jobs ORDER BY created_at DESC LIMIT 5;
+SELECT DISTINCT target_lang FROM job_rows WHERE job_id = '<id>';
+
+-- augmenter 가 정말 호출됐는지
+SELECT augmenter_log FROM job_rows WHERE job_id = '<id>' LIMIT 5;
+-- "requested": ["glossary"] 가 있는데 "glossary_terms": [] 면 매칭 0건
+```
+
+CSV 헤더의 lang 코드와 위 결과가 같은 표기인지 비교. 다른 표기(`ko` vs `ko-KR`)면 #2 참고.
+
+### mojibake 인코딩 역추적
+
+```python
+# 깨진 텍스트의 원본 인코딩을 추정
+mojibake = "ë³´íµ"
+for enc in ["latin-1", "cp1252", "cp949", "utf-8"]:
+    try:
+        recovered = mojibake.encode(enc).decode("utf-8")
+        print(enc, "→", recovered)
+    except Exception:
+        pass
+```
+
+`latin-1 → 보통` 같이 의미 있는 한글이 나오면 그게 원래 인코딩. CLI 버전:
+[`snippets/debug/mojibake_trace.py`](./snippets/debug/mojibake_trace.py).
+
+---
+
+## D. 참고 자료
+
+- [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/) — `TextDecoder` 지원 인코딩 목록
+- [RFC 5987](https://datatracker.ietf.org/doc/html/rfc5987) — Content-Disposition 다국어 파일명
+- [BCP 47](https://datatracker.ietf.org/doc/html/rfc5646) — 언어 태그 표준
+- [Unicode UAX #15](https://unicode.org/reports/tr15/) — Normalization Forms (NFC/NFD)
+- [SKOS](https://www.w3.org/TR/skos-reference/) — Simple Knowledge Organization System (prefLabel / altLabel / broader), #11 에서 사용
+- [lemon / lexinfo](https://lemon-model.net/) — 온톨로지용 렉시콘 모델(품사·어휘 메타데이터), #11 에서 사용
+
+---
+
+## E. 자주 쓰는 코드 조각
+
+### E.1 인코딩 자동 감지 (Browser)
 
 ```ts
 async function readTextSmart(file: File): Promise<string> {
@@ -499,7 +938,7 @@ async function readTextSmart(file: File): Promise<string> {
 }
 ```
 
-### 8.2 인코딩 자동 감지 (Python, charset-normalizer)
+### E.2 인코딩 자동 감지 (Python, charset-normalizer)
 
 ```python
 from charset_normalizer import from_bytes
@@ -524,7 +963,7 @@ except UnicodeDecodeError:
     text = raw.decode("cp949")
 ```
 
-### 8.3 lang 코드 alias
+### E.3 lang 코드 alias
 
 ```python
 def lang_aliases(lang: str) -> list[str]:
@@ -533,7 +972,7 @@ def lang_aliases(lang: str) -> list[str]:
     return [norm, base] if base and base != norm else [norm]
 ```
 
-### 8.4 RFC 5987 Content-Disposition
+### E.4 RFC 5987 Content-Disposition
 
 ```ts
 function contentDisposition(filename: string): string {
@@ -545,7 +984,7 @@ function contentDisposition(filename: string): string {
 }
 ```
 
-### 8.5 UTF-8 BOM 붙여 CSV export
+### E.5 UTF-8 BOM 붙여 CSV export
 
 ```ts
 return new Response("﻿" + csvBody, {
@@ -556,7 +995,7 @@ return new Response("﻿" + csvBody, {
 });
 ```
 
-### 8.6 locale별 콘텐츠 resolve (base 폴백 + 부분 override)
+### E.6 locale별 콘텐츠 resolve (base 폴백 + 부분 override)
 
 ```ts
 function getPost(slug: string, locale: string): Post {
@@ -575,7 +1014,7 @@ function getPost(slug: string, locale: string): Post {
 
 ---
 
-## 9. 실제로 부딪힌 이슈 타임라인 (translation-eval)
+## F. 실제로 부딪힌 이슈 타임라인 (translation-eval)
 
 | 커밋 | 무엇이 깨졌나 | 어떻게 고쳤나 |
 |------|--------------|---------------|
@@ -585,14 +1024,14 @@ function getPost(slug: string, locale: string): Post {
 | `6e81668` | `ko-KR` CSV ↔ `ko` ctx 매칭 0건 | alias 등록 + 조회 폴백 |
 | `433e1dd` | 평가에서 어떤 용어가 적용됐는지 안 보임 | 정규화 테이블 `glossary_matches` + 평가 UI 칩 |
 | `7fc06c9` | 다국어 Job 에서 TMX 인덱스 캐시 충돌 | `(src,tgt)` per 캐시 키 |
-| `ac0260e` | xlsx 입력 미지원 | wizard 가 첫 시트 자동 파싱 |
+| `ac0260e` | xlsx 입력 처리 안 됨 | wizard 가 첫 시트 자동 파싱 |
 | `21ae7bd` | CSV 컬럼이 `한국어` 같은 자유 헤더 | per-column 매핑 UI + AI 자동 매핑 |
 
 각 항목은 위 1·2·4·5·6장 어느 한 챕터의 변종 (3장은 다른 프로젝트 출처).
 
 ---
 
-## 10. 안 한 것 / 미해결
+## G. 안 한 것 / 미해결
 
 - 글로서리 substring 매칭의 단어경계 가드 (#4.2)
 - `case_sensitive` 옵션 spec 전달 (#4.3)
@@ -600,63 +1039,3 @@ function getPost(slug: string, locale: string): Post {
 - retrieval / graph payload 의 S3 ref 저장
 - NFD/NFC 정규화 (현재까지 문제 없음)
 - 평가 시점에서 "용어집 위반 여부" 자동 체크 (UI 표시만 함)
-
----
-
-## 11. 디버깅 명령 모음
-
-### 파일 인코딩 의심될 때
-
-```powershell
-# PowerShell — 첫 바이트들 보기
-$bytes = [System.IO.File]::ReadAllBytes("path.csv")
-$bytes[0..20] | ForEach-Object { "{0:X2}" -f $_ }
-# 0xEF 0xBB 0xBF → UTF-8 BOM
-# 0xE0~ 3바이트 한글 → UTF-8
-# 0x80~0xFE 2바이트 한글 → cp949
-```
-
-```bash
-# Unix
-file path.csv                       # 인코딩 추정
-hexdump -C path.csv | head -2       # 첫 바이트 확인
-iconv -f cp949 -t utf-8 in.csv > out.csv  # 변환
-```
-
-### 글로서리 매칭이 비었을 때
-
-```sql
--- Job 의 source/target lang 확인
-SELECT id, config_snapshot->>'source_lang' FROM translation_jobs ORDER BY created_at DESC LIMIT 5;
-SELECT DISTINCT target_lang FROM job_rows WHERE job_id = '<id>';
-
--- augmenter 가 정말 호출됐는지
-SELECT augmenter_log FROM job_rows WHERE job_id = '<id>' LIMIT 5;
--- "requested": ["glossary"] 가 있는데 "glossary_terms": [] 면 매칭 0건
-```
-
-CSV 헤더의 lang 코드와 위 결과가 같은 표기인지 비교.
-
-### mojibake 인코딩 역추적
-
-```python
-# 깨진 텍스트의 원본 인코딩을 추정
-mojibake = "ë³´íµ"
-for enc in ["latin-1", "cp1252", "cp949", "utf-8"]:
-    try:
-        recovered = mojibake.encode(enc).decode("utf-8")
-        print(enc, "→", recovered)
-    except Exception:
-        pass
-```
-
-`latin-1 → 보통` 같이 의미 있는 한글이 나오면 그게 원래 인코딩.
-
----
-
-## 12. 참고 자료
-
-- [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/) — `TextDecoder` 지원 인코딩 목록
-- [RFC 5987](https://datatracker.ietf.org/doc/html/rfc5987) — Content-Disposition 다국어 파일명
-- [BCP 47](https://datatracker.ietf.org/doc/html/rfc5646) — 언어 태그 표준
-- [Unicode UAX #15](https://unicode.org/reports/tr15/) — Normalization Forms (NFC/NFD)
