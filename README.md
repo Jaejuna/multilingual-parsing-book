@@ -497,11 +497,11 @@ disproportionately.
 
 # Part II — dataset engineering for ML
 
-Part I is about *parsing bugs* — one defect, one fix. A Linguistic Engineer
-on a voice-assistant team spends most of the day a layer up: turning messy
-multilingual inputs into **datasets, metrics, and feedback loops** that ML
-systems consume. Part II is that layer, built on the exact same primitives
-(encoding discipline #1, lang-code aliases #2, script-aware matching #4).
+Part I is about *parsing bugs* — one defect, one fix. The work one layer up is
+turning messy multilingual inputs into **datasets, metrics, and feedback loops**
+that ML systems consume. Part II is that layer, built on the exact same
+primitives (encoding discipline #1, lang-code aliases #2, script-aware matching
+#4).
 
 Every tool here is **stdlib-only**, prints a Markdown report by default
 (`--format json` for machines), exits non-zero on findings (so it works as
@@ -721,9 +721,9 @@ columns are double-quoted throughout (#6.2).
 
 The Part II tools load the whole corpus with `rows = list(reader)` and match
 terms with a `for term in terms` loop. Both are fine for a vendor CSV and both
-fall over at Meta scale. This chapter replaces each with a technique that
-scales — and, in the spirit of the book, proves it with numbers rather than
-adjectives.
+fall over once the corpus reaches millions of rows. This chapter replaces each
+with a technique that scales — and, in the spirit of the book, proves it with
+numbers rather than adjectives.
 
 ### Time: Aho-Corasick vs the naive loop
 

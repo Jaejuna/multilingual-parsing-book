@@ -5,11 +5,11 @@ WHY THIS EXISTS  (scale, part 1: time)
 --------------------------------------
 Chapter 4 asserts that the naive `for term in terms: term in text` loop costs
 O(terms x segment_length) and that Aho-Corasick collapses it to a single pass.
-Asserting is not proving. A Meta-scale interviewer asks "what happens at a
-million segments and ten thousand terms?" — this benchmark answers with
-numbers: it holds the segments fixed, grows the glossary, and shows the naive
-loop's time climbing roughly linearly with the term count while the
-Aho-Corasick *search* time stays flat (the automaton is built once).
+Asserting is not proving. At a million segments and ten thousand terms, "which
+is faster" stops being rhetorical — this benchmark answers with numbers: it
+holds the segments fixed, grows the glossary, and shows the naive loop's time
+climbing roughly linearly with the term count while the Aho-Corasick *search*
+time stays flat (the automaton is built once).
 
 It reuses the matcher from #4 (which ships a pure-Python Aho-Corasick
 fallback, so this runs with zero third-party dependencies).

@@ -3,12 +3,12 @@
 
 WHY THIS EXISTS  (the feedback loop)
 ------------------------------------
-Shipping a glossary into a translation pipeline is only half the job. The
-question a Linguistic Engineer has to answer next is: *did the model
-actually use it?* "We added 420 terms" is an input metric; "the Japanese
-output applied 64% of the applicable terms" is the outcome metric that
-tells product whether the augmenter is working. This script computes that
-outcome metric and hands back the specific misses so the loop can close.
+Shipping a glossary into a translation pipeline is only half the work. The
+question to answer next is: *did the model actually use it?* "We added 420
+terms" is an input metric; "the Japanese output applied 64% of the applicable
+terms" is the outcome metric that tells product whether the augmenter is
+working. This script computes that outcome metric and hands back the specific
+misses so the loop can close.
 
 It is the evaluation twin of README #4 (glossary matching): #4 finds terms
 to *inject*; this finds whether the injected term *survived* into the
