@@ -26,10 +26,34 @@ snippets/
 ├── download/                   # HTTP response patterns
 │   ├── content-disposition-rfc5987.ts   # filename* for non-ASCII names
 │   └── streaming-csv-export.ts          # ReadableStream-based CSV
-└── debug/                      # one-shot diagnostic tools
-    ├── inspect-file-encoding.ps1    # PowerShell encoding inspector
-    ├── inspect-file-encoding.sh     # bash equivalent
-    └── mojibake_trace.py            # CLI: "I see mojibake, what was it?"
+├── debug/                      # one-shot diagnostic tools
+│   ├── inspect-file-encoding.ps1    # PowerShell encoding inspector
+│   ├── inspect-file-encoding.sh     # bash equivalent
+│   └── mojibake_trace.py            # CLI: "I see mojibake, what was it?"
+│
+│   # ── Part II: dataset engineering for ML ────────────────────────────
+├── dataset-quality/            # audit a corpus as data
+│   ├── audit_corpus.py              # encoding/lang-code/coverage/placeholder report
+│   └── sample_corpus.csv            # demo data with planted defects
+├── glossary-eval/              # did the model honor the glossary?
+│   ├── glossary_adherence.py        # per-language adherence + misses (feedback loop)
+│   ├── glossary.csv / segments.csv  # demo data
+├── experiments/                # decide matcher changes with evidence
+│   ├── strategy_ab.py               # precision/recall A/B over a gold set
+│   └── gold.csv                     # labeled judgements
+├── knowledge-graph/            # glossary -> lexicon / ontology
+│   ├── build_lexicon.py             # concepts, triples, cross-lingual lookup
+│   └── glossary_lex.csv             # demo with domain/synonym/broader
+├── responsible-ai/             # is any language underserved?
+│   ├── coverage_bias.py             # per-language equity report
+│   └── corpus_multilang.csv         # demo incl. RTL (ar/he) + Indic (hi)
+├── nlu/                        # build NLU training data
+│   ├── build_intent_dataset.py      # templated intent+slot synthesis w/ spans
+│   └── templates.json               # demo templates
+├── sql/                        # the same metrics, in Postgres
+│   └── quality_metrics.sql          # adherence/coverage/drift/mojibake queries
+└── tests/                      # pytest over the Part II tools
+    └── test_part2.py                # 16 tests, asserts planted defects are caught
 ```
 
 ## How to read these
@@ -58,6 +82,28 @@ snippets/
 | Hangul filename garbled in Firefox/Safari downloads | [`download/content-disposition-rfc5987.ts`](./download/content-disposition-rfc5987.ts) |
 | Large CSV export times out on the platform | [`download/streaming-csv-export.ts`](./download/streaming-csv-export.ts) |
 | "Why is this file broken?" — quick triage | [`debug/inspect-file-encoding.ps1`](./debug/inspect-file-encoding.ps1) / [`.sh`](./debug/inspect-file-encoding.sh) |
+
+### Part II — dataset engineering for ML
+
+| Task | Snippet |
+|------|---------|
+| Audit a vendor corpus before ingest (encoding/lang-code/coverage/placeholders) | [`dataset-quality/audit_corpus.py`](./dataset-quality/audit_corpus.py) |
+| Measure whether MT output actually applied the glossary | [`glossary-eval/glossary_adherence.py`](./glossary-eval/glossary_adherence.py) |
+| Decide a matcher change with precision/recall, not vibes | [`experiments/strategy_ab.py`](./experiments/strategy_ab.py) |
+| Turn a flat glossary into a multilingual lexicon / triples | [`knowledge-graph/build_lexicon.py`](./knowledge-graph/build_lexicon.py) |
+| Check if any language is systematically underserved | [`responsible-ai/coverage_bias.py`](./responsible-ai/coverage_bias.py) |
+| Synthesize a labeled intent + slot-filling dataset | [`nlu/build_intent_dataset.py`](./nlu/build_intent_dataset.py) |
+| Run the same metrics straight in Postgres | [`sql/quality_metrics.sql`](./sql/quality_metrics.sql) |
+
+Run the Part II test suite from this directory:
+
+```bash
+python -m pytest tests/ -q      # 16 tests; needs `pip install pytest`
+```
+
+Every Part II tool is stdlib-only, prints a Markdown report by default
+(`--format json` for machines), and exits non-zero when it finds a problem
+so it doubles as a CI gate.
 
 ## Conventions
 
