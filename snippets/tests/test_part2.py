@@ -207,3 +207,25 @@ def test_generate_skips_intents_missing_a_language_slot():
     out = nlu.generate(spec, max_per_template=5, rng=random.Random(0))
     langs = {e.lang for e in out}
     assert "en" in langs and "ko" not in langs   # ko dropped: no slot values
+
+
+# --------------------------------------------------------------------------
+# pandas view (ch.7 bonus) — must return the same numbers as the stdlib tool
+# --------------------------------------------------------------------------
+
+
+def test_pandas_parity_with_stdlib_audit():
+    pd = pytest.importorskip("pandas")   # skip cleanly if pandas absent
+    pdm = _load("pandas/corpus_metrics_pandas.py", "corpus_metrics_pandas")
+
+    sample = SNIPPETS / "dataset-quality" / "sample_corpus.csv"
+    rows, enc = audit.read_csv_smart(sample)
+    rep = audit.audit(rows, list(rows[0].keys()), enc, "x", "term", "ko")
+
+    df = pd.read_csv(sample, dtype="string", keep_default_na=False, encoding="utf-8-sig")
+    prep = pdm.analyze(df, "term")
+
+    assert prep["coverage"]["ja_JP"] == rep.coverage["ja_JP"]
+    assert prep["duplicate_keys"] == rep.metrics.get("duplicate_key")
+    assert list(prep["lang_code_conflicts"]) == list(rep.lang_code_conflicts)
+    assert prep["length_outliers"] == rep.metrics.get("length_outlier")
