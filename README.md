@@ -30,6 +30,7 @@ chapter that matches the bug you're chasing.
 13. [Building an NLU intent + slot dataset](#13-building-an-nlu-intent--slot-dataset)
 14. [The same metrics in SQL](#14-the-same-metrics-in-sql)
 15. [Scaling to a corpus that doesn't fit in RAM](#15-scaling-to-a-corpus-that-doesnt-fit-in-ram)
+16. [Was the difference real? significance for the A/B](#16-was-the-difference-real-significance-for-the-ab)
 
 **Appendix**
 
@@ -794,6 +795,63 @@ agree. DuckDB/polars are optional heavy dependencies (like `pyahocorasick` in
 | streaming stats, one pass | Welford z-score (not median) |
 | bigger than RAM + analytic queries | DuckDB / polars |
 | still fits in RAM | the simpler #7 / #8 tools |
+
+## 16. Was the difference real? significance for the A/B
+
+Chapter 10 produced a clean table — `word_boundary` 100%, `substring` 78% — and
+stopped there. But a table is a point estimate, and at 13 gold judgements that
+gap can be luck. This chapter adds the two things that turn "we A/B'd it" into a
+defensible claim: a significance test and a confidence interval. Run it with
+`strategy_ab.py --significance`.
+
+### McNemar: are the two strategies actually different?
+
+Comparing two strategies on the *same* items is a paired problem, so a plain
+two-sample test is the wrong tool. McNemar looks only at the *discordant* items
+— where one strategy is right and the other wrong — and asks whether that split
+could be a coin flip. We use the exact binomial form because the chi-square
+approximation is unreliable at the small n a hand-labelled gold set usually has.
+
+### The same gap, two sample sizes
+
+n = 13 (chapter 10's set):
+
+```
+word_boundary vs the runner-up
+discordant: 2 vs 0  ->  exact p = 0.50  ->  NOT significant
+```
+
+n = 120 (the same kinds of cases, more of them):
+
+```
+word_boundary vs substring
+discordant: 54 vs 0  ->  exact p < 0.0001  ->  significant
+```
+
+Identical-looking winners, opposite conclusions. The only thing that changed is
+how much evidence there was. This is why "we ran an A/B" is not a result until
+it carries an n and a p.
+
+### Bootstrap CI: how wide is each number?
+
+The p-value answers "different or not"; a confidence interval answers "how sure
+is each estimate". Resample the gold items with replacement, recompute F1 each
+time, and take the middle 95%:
+
+```
+| substring F1 | 95% CI         | n   |
+|        71.0% | [62.9%, 77.6%] | 120 |   tight — trustworthy
+|        77.8% | [50.0%, 95.2%] |  13 |   spans 45 points — tells you nothing
+```
+
+A wide interval is the honest signal to collect more data before deciding.
+
+### Takeaway
+
+Report a winner with three things, never one: the point estimate, a confidence
+interval, and a paired significance test. The first is what juniors report; all
+three are what makes the call defensible. Runnable:
+[`snippets/experiments/strategy_ab.py`](./snippets/experiments/strategy_ab.py) `--significance`.
 
 ---
 

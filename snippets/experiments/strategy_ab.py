@@ -40,6 +40,8 @@ import argparse
 import csv
 import io
 import json
+import math
+import random
 import re
 import sys
 import unicodedata
@@ -158,6 +160,105 @@ def run_experiment(gold: list[dict[str, str]], strategies: dict[str, Strategy]) 
 
 
 # --------------------------------------------------------------------------
+# Statistical significance: is the F1 gap real, or is the sample too small?
+# --------------------------------------------------------------------------
+#
+# README #10 produced a clean table — word_boundary 100%, substring 78% — but a
+# table is a point estimate. With 13 gold judgements that gap could be luck.
+# This is where most "we A/B'd it" claims quietly fall apart, so the harness
+# now reports uncertainty, not just the winner.
+
+
+def predictions(gold: list[dict[str, str]],
+                strategies: dict[str, Strategy]) -> dict[str, list[tuple[bool, bool]]]:
+    """Per-item (predicted, label) pairs per strategy — paired tests need the
+    item-level alignment that the aggregate Scores throw away."""
+    out: dict[str, list[tuple[bool, bool]]] = {name: [] for name in strategies}
+    for row in gold:
+        text = row.get("text") or ""
+        term = (row.get("term") or "").strip()
+        label = (row.get("gold") or "").strip() in ("1", "true", "True", "yes")
+        for name, strat in strategies.items():
+            out[name].append((strat(text, term), label))
+    return out
+
+
+def f1_of(pairs: list[tuple[bool, bool]]) -> float:
+    tp = sum(1 for p, l in pairs if p and l)
+    fp = sum(1 for p, l in pairs if p and not l)
+    fn = sum(1 for p, l in pairs if not p and l)
+    pr = tp / (tp + fp) if (tp + fp) else 0.0
+    rc = tp / (tp + fn) if (tp + fn) else 0.0
+    return 2 * pr * rc / (pr + rc) if (pr + rc) else 0.0
+
+
+def mcnemar_exact(a: list[tuple[bool, bool]],
+                  b: list[tuple[bool, bool]]) -> tuple[int, int, float]:
+    """Exact (binomial) McNemar test on two strategies' per-item correctness.
+
+    Only *discordant* items matter — where one strategy is right and the other
+    wrong. Under the null (the two are equally good) each discordant item is a
+    coin flip, so their split follows Binomial(b+c, 0.5). The exact two-sided
+    p-value avoids the chi-square approximation, which is unreliable at the
+    small n this kind of gold set usually has.
+    """
+    b_only = c_only = 0
+    for (pa, la), (pb, lb) in zip(a, b):
+        ca, cb = (pa == la), (pb == lb)
+        if ca and not cb:
+            b_only += 1
+        elif cb and not ca:
+            c_only += 1
+    n = b_only + c_only
+    if n == 0:
+        return b_only, c_only, 1.0
+    k = min(b_only, c_only)
+    tail = sum(math.comb(n, i) for i in range(k + 1)) / (2 ** n)
+    return b_only, c_only, min(2 * tail, 1.0)
+
+
+def bootstrap_f1_ci(pairs: list[tuple[bool, bool]], n_boot: int = 2000,
+                    alpha: float = 0.05, seed: int = 0) -> tuple[float, float]:
+    """Percentile bootstrap CI for F1: resample items with replacement, recompute
+    F1, take the middle (1-alpha). A wide interval is the honest signal that the
+    point estimate isn't trustworthy yet."""
+    rng = random.Random(seed)
+    n = len(pairs)
+    f1s = sorted(f1_of([pairs[rng.randrange(n)] for _ in range(n)])
+                 for _ in range(n_boot))
+    lo = f1s[int((alpha / 2) * n_boot)]
+    hi = f1s[min(int((1 - alpha / 2) * n_boot), n_boot - 1)]
+    return lo, hi
+
+
+def significance_report(gold: list[dict[str, str]], strategies: dict[str, Strategy],
+                        n_boot: int = 2000, alpha: float = 0.05, seed: int = 0) -> str:
+    preds = predictions(gold, strategies)
+    ranked = sorted(strategies, key=lambda nm: f1_of(preds[nm]), reverse=True)
+    out: list[str] = []
+    w = out.append
+    w("# Significance\n")
+    w(f"- gold judgements: **{len(gold)}**\n")
+    w("## 95% bootstrap CI for F1\n")
+    w("| strategy | F1 | 95% CI |")
+    w("|----------|----|--------|")
+    for nm in ranked:
+        lo, hi = bootstrap_f1_ci(preds[nm], n_boot=n_boot, alpha=alpha, seed=seed)
+        w(f"| `{nm}` | {f1_of(preds[nm]):.1%} | [{lo:.1%}, {hi:.1%}] |")
+    w("")
+    top, second = ranked[0], ranked[1]
+    b, c, pval = mcnemar_exact(preds[top], preds[second])
+    w(f"## McNemar: `{top}` vs `{second}`\n")
+    w(f"- discordant items: `{top}` right & `{second}` wrong = {b}; reverse = {c}")
+    verdict = "significant" if pval < alpha else "NOT significant"
+    w(f"- exact two-sided p = **{pval:.4f}** → **{verdict}** at α={alpha}")
+    if pval >= alpha:
+        w(f"- the F1 gap is within noise at this sample size; collect more gold "
+          f"before claiming `{top}` beats `{second}`.")
+    return "\n".join(out)
+
+
+# --------------------------------------------------------------------------
 # Rendering
 # --------------------------------------------------------------------------
 
@@ -200,6 +301,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("gold", type=Path, help="labeled CSV: text,term,gold")
     p.add_argument("--min-len", type=int, default=3,
                    help="min-length guard for the guarded strategy (default 3)")
+    p.add_argument("--significance", action="store_true",
+                   help="add McNemar test + bootstrap CIs (is the gap real?)")
+    p.add_argument("--n-boot", type=int, default=2000, help="bootstrap resamples")
+    p.add_argument("--seed", type=int, default=0)
     p.add_argument("--format", choices=["md", "json"], default="md")
     args = p.parse_args(argv)
 
@@ -218,6 +323,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     results = run_experiment(gold, strategies)
     print(to_markdown(results, len(gold)) if args.format == "md" else to_json(results))
+    if args.significance:
+        print("\n" + significance_report(gold, strategies,
+                                          n_boot=args.n_boot, seed=args.seed))
     return 0
 
 

@@ -132,6 +132,31 @@ def test_experiment_scores_precision_recall():
     assert res["substring"].fp == 1   # fired inside 'Said'
 
 
+# --- ch.16: statistical significance --------------------------------------
+
+
+def test_mcnemar_flags_a_real_difference():
+    a = [(True, True)] * 40                                   # A always correct
+    b = [(True, True)] * 20 + [(False, True)] * 20            # B wrong on 20
+    b_only, c_only, p = ab.mcnemar_exact(a, b)
+    assert (b_only, c_only) == (20, 0)
+    assert p < 0.001                                          # clearly significant
+
+
+def test_mcnemar_not_significant_with_one_discordant():
+    a = [(True, True)] * 11
+    b = [(True, True)] * 10 + [(False, True)]                 # 1 vs 0 discordant
+    _, _, p = ab.mcnemar_exact(a, b)
+    assert p == pytest.approx(1.0)                            # can't conclude
+
+
+def test_bootstrap_ci_brackets_the_point_estimate():
+    pairs = [(True, True)] * 7 + [(True, False)] * 3          # F1 ~ 0.82
+    lo, hi = ab.bootstrap_f1_ci(pairs, n_boot=1000, seed=1)
+    point = ab.f1_of(pairs)
+    assert 0.0 <= lo <= point <= hi <= 1.0
+
+
 # --------------------------------------------------------------------------
 # build_lexicon
 # --------------------------------------------------------------------------

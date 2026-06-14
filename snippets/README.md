@@ -98,6 +98,7 @@ snippets/
 | Audit a vendor corpus before ingest (encoding/lang-code/coverage/placeholders) | [`dataset-quality/audit_corpus.py`](./dataset-quality/audit_corpus.py) |
 | Measure whether MT output actually applied the glossary | [`glossary-eval/glossary_adherence.py`](./glossary-eval/glossary_adherence.py) |
 | Decide a matcher change with precision/recall, not vibes | [`experiments/strategy_ab.py`](./experiments/strategy_ab.py) |
+| Is that A/B gap real? McNemar + bootstrap CI | [`experiments/strategy_ab.py`](./experiments/strategy_ab.py) `--significance` |
 | Turn a flat glossary into a multilingual lexicon / triples | [`knowledge-graph/build_lexicon.py`](./knowledge-graph/build_lexicon.py) |
 | Check if any language is systematically underserved | [`responsible-ai/coverage_bias.py`](./responsible-ai/coverage_bias.py) |
 | Synthesize a labeled intent + slot-filling dataset | [`nlu/build_intent_dataset.py`](./nlu/build_intent_dataset.py) |
