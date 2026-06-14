@@ -1,0 +1,9 @@
+key,en,ko,ja,zh-CN,ar,he,hi,th
+attack,Attack,공격,攻撃,攻击,هجوم,התקפה,हमला,โจมตี
+defense,Defense,방어,防御,防御,دفاع,הגנה,रक्षा,
+loot,Loot,전리품,戦利品,战利品,غنيمة,,लूट,
+respawn,Respawn,리스폰,リスポーン,重生,Respawn,,,
+cooldown,Cooldown,재사용 대기시간,クールダウン,冷却,تهدئة,,,
+settings,Settings,설정,設定,设置,إعدادات,הגדרות,सेटिंग्स,การตั้งค่า
+cancel,Cancel,취소,キャンセル,取消,إلغاء,ביטול,रद्द,ยกเลิก
+confirm,Confirm,확인,確認,确认,Confirm,אישור,,ยืนยัน
