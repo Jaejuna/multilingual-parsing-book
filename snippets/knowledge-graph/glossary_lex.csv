@@ -1,0 +1,7 @@
+id,en,ko,ja,zh-CN,domain,pos,synonyms,broader
+item,item,아이템,アイテム,物品,Inventory,noun,,
+loot,loot,전리품,戦利品,战利品,Combat,noun,plunder|spoils,item
+weapon,weapon,무기,武器,武器,Combat,noun,arms,item
+cooldown,cooldown,재사용 대기시간,クールダウン,冷却,Combat,noun,cool-down,
+respawn,respawn,리스폰,リスポーン,重生,System,verb,,
+ai_director,AI Director,AI 디렉터,AIディレクター,AI总监,System,noun,director,
