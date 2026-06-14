@@ -90,11 +90,22 @@ def is_cjk(text: str) -> bool:
     return False
 
 
+def fold(s: str) -> str:
+    """Normalize a string for caseless, width-insensitive matching.
+
+    NFKC folds compatibility variants (full-width 'ＡＩ' -> 'AI', half-width
+    katakana, '①' -> '1'); casefold is the Unicode-correct caseless fold
+    (ß -> ss, Turkish İ/ı) that lower() gets wrong. Both belong on MATCH KEYS,
+    not on stored/displayed text -- they are lossy. See Appendix B field notes.
+    """
+    return unicodedata.normalize("NFKC", s).casefold()
+
+
 def contains_term(haystack: str, needle: str, case_sensitive: bool) -> bool:
     """Script-aware presence test: \\b for Latin, plain substring for CJK."""
     if not needle:
         return False
-    h, n = (haystack, needle) if case_sensitive else (haystack.lower(), needle.lower())
+    h, n = (haystack, needle) if case_sensitive else (fold(haystack), fold(needle))
     if is_cjk(needle):
         return n in h
     return re.search(rf"\b{re.escape(n)}\b", h) is not None

@@ -67,7 +67,7 @@ snippets/
 ├── multi-source/               # ch.20 merge heterogeneous CSVs
 │   └── build_corpus.py              # encoding/lang-code normalize + conflict + provenance
 └── tests/                      # pytest over the Part II tools
-    └── test_part2.py                # 31 tests, asserts planted defects are caught
+    └── test_part2.py                # 32 tests, asserts planted defects are caught
 ```
 
 (ch.19's transitive reasoning + entity linking extend

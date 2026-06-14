@@ -1084,6 +1084,15 @@ Each is reproduced runnably (broken behaviour next to the fix) in
    across the pipe (`'\udceb' ... surrogates not allowed`). Fix: one process, or
    `PYTHONIOENCODING` for both — encoding boundaries (#1) exist between your own
    processes too.
+8. **`.lower()` is not caseless matching (found in review).** Every matcher
+   case-folded with `.lower()`, which is wrong outside Latin: German `STRASSE`
+   ≠ `straße`, Turkish `İ`/`ı`, Greek final sigma. Fix: `str.casefold()`, the
+   Unicode caseless fold — now used in every matcher (#4, #9, #18, Aho-Corasick).
+9. **Full-width and half-width variants silently miss (#7).** A glossary `AI`
+   never matched the full-width `ＡＩ` an IME or legacy system emits, nor
+   half-width katakana. Fix: NFKC-normalize match keys before comparing
+   (`unicodedata.normalize("NFKC", s)`); the matchers now fold NFKC + casefold
+   together. NFKC is lossy, so do it on match keys, not stored/displayed text.
 
 ---
 

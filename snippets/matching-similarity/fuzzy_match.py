@@ -36,13 +36,20 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+import unicodedata
 from collections import Counter
 
 
+def fold(s: str) -> str:
+    """NFKC + casefold: width-insensitive ('ＡＩ' -> 'AI') and Unicode caseless
+    (ß -> ss). casefold(), not lower(). See Appendix B field notes."""
+    return unicodedata.normalize("NFKC", s).casefold()
+
+
 def char_ngrams(text: str, n: int = 3) -> list[str]:
-    """Padded character n-grams, case-folded. Padding (^/$) lets the start and
-    end of a token contribute, so short terms still get usable features."""
-    s = f"^{text.lower().strip()}$"
+    """Padded character n-grams, normalized for matching. Padding (^/$) lets the
+    start and end of a token contribute, so short terms still get usable features."""
+    s = f"^{fold(text).strip()}$"
     if len(s) <= n:
         return [s]
     return [s[i:i + n] for i in range(len(s) - n + 1)]
@@ -124,8 +131,8 @@ QUERIES = [
 
 
 def exact_hit(query: str, glossary: list[str]) -> bool:
-    q = query.lower()
-    return any(q == t.lower() for t in glossary)
+    q = fold(query)
+    return any(q == fold(t) for t in glossary)
 
 
 def demo(threshold: float) -> str:

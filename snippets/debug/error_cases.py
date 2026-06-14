@@ -12,8 +12,8 @@ is demonstrable, not just narrated. Run it and watch each trap fire and clear.
     python error_cases.py            # run every case
     python error_cases.py --case 4   # run one
 
-Most cases are stdlib-only. Cases 5 (polars) and the columnar half of case 6
-need optional deps and self-skip if absent. Python 3.10+.
+Most cases are stdlib-only. Case 5 (polars) needs an optional dep and self-skips
+if absent; the rest are stdlib-only. Python 3.10+.
 """
 
 from __future__ import annotations
@@ -137,9 +137,32 @@ def case_7_cross_process_pipe() -> tuple[str, str, str]:
             broke, f"surrogateescape round-trip: {fixed!r}")
 
 
+def case_8_casefold_not_lower() -> tuple[str, str, str]:
+    """Caseless matching with .lower() mishandles non-Latin case. Found in
+    review: every matcher used .lower(); switched to .casefold()."""
+    a, b = "STRASSE", "straße"          # German: should match caselessly
+    lo = (a.lower() == b.lower())
+    cf = (a.casefold() == b.casefold())
+    return ("caseless matching: .lower() vs .casefold() (ß, Turkish İ)",
+            f".lower(): {a.lower()!r} == {b.lower()!r} -> {lo}",
+            f".casefold(): {a.casefold()!r} == {b.casefold()!r} -> {cf}")
+
+
+def case_9_nfkc_width() -> tuple[str, str, str]:
+    """Full-width/half-width variants won't match until NFKC-normalized. IME and
+    legacy systems emit 'ＡＩ' (full-width); a glossary 'AI' misses it (#7)."""
+    a, b = "ＡＩ", "AI"                  # full-width vs ASCII
+    raw = (a == b)
+    nfkc = (unicodedata.normalize("NFKC", a) == unicodedata.normalize("NFKC", b))
+    return ("full-width vs ASCII needs NFKC before matching",
+            f"raw: {a!r} == {b!r} -> {raw}",
+            f"NFKC: normalize({a!r})={unicodedata.normalize('NFKC', a)!r} -> {nfkc}")
+
+
 CASES = [case_1_console_cp949, case_2_mojibake_regex, case_3_dataclass_importlib,
          case_4_pandas_blank_outlier, case_5_polars_empty_null,
-         case_6_lcg_low_bit, case_7_cross_process_pipe]
+         case_6_lcg_low_bit, case_7_cross_process_pipe, case_8_casefold_not_lower,
+         case_9_nfkc_width]
 
 
 def main(argv: list[str] | None = None) -> int:

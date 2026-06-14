@@ -135,6 +135,14 @@ def test_experiment_scores_precision_recall():
 # --- ch.16: statistical significance --------------------------------------
 
 
+def test_matchers_fold_case_and_width():
+    # casefold (ß) and NFKC width (full-width ＡＩ) must match; lower()/raw would fail
+    assert ab.strat_substring("Die STRASSE heute", "straße")        # ß casefold
+    assert ab.strat_substring("press ＡＩ now", "AI")                # full-width NFKC
+    assert adher.contains_term("STRASSE", "straße", case_sensitive=False)
+    assert adher.contains_term("ＡＩ ディレクター", "AI", case_sensitive=False)
+
+
 def test_mcnemar_flags_a_real_difference():
     a = [(True, True)] * 40                                   # A always correct
     b = [(True, True)] * 20 + [(False, True)] * 20            # B wrong on 20

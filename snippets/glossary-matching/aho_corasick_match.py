@@ -28,7 +28,14 @@ boundary tokens.
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Iterable, Iterator
+
+
+def _fold(s: str) -> str:
+    """NFKC + casefold for caseless, width-insensitive keys (full-width 'ＡＩ' ->
+    'AI'; ß -> ss). casefold(), not lower(). See README Appendix B field notes."""
+    return unicodedata.normalize("NFKC", s).casefold()
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +65,7 @@ def build_matcher(
         if not src or len(src) < min_len or src in seen:
             continue
         seen.add(src)
-        key = src if case_sensitive else src.lower()
+        key = src if case_sensitive else _fold(src)  # NFKC+casefold > lower for i18n
         pairs.append((key, (src, tgt)))
 
     try:
@@ -99,7 +106,7 @@ class _AhocorasickMatcher(Matcher):
         self._automaton.make_automaton()
 
     def find(self, text: str) -> list[tuple[str, str]]:
-        haystack = text if self._case_sensitive else text.lower()
+        haystack = text if self._case_sensitive else _fold(text)
         seen: set[str] = set()
         out: list[tuple[str, str]] = []
         # ``iter`` yields (end_index, payload). We don't need positions
@@ -188,7 +195,7 @@ class _PurePythonMatcher(Matcher):
     # ---- search -------------------------------------------------------------
 
     def find(self, text: str) -> list[tuple[str, str]]:
-        haystack = text if self._case_sensitive else text.lower()
+        haystack = text if self._case_sensitive else _fold(text)
         state = 0
         seen: set[str] = set()
         out: list[tuple[str, str]] = []

@@ -83,17 +83,23 @@ def is_cjk(text: str) -> bool:
 Strategy = Callable[[str, str], bool]
 
 
+def fold(s: str) -> str:
+    """NFKC + casefold for caseless, width-insensitive matching (full-width
+    'ＡＩ' -> 'AI'; ß -> ss). casefold(), not lower(); on match keys only."""
+    return unicodedata.normalize("NFKC", s).casefold()
+
+
 def strat_substring(text: str, term: str) -> bool:
     """#4.1 -- plain case-insensitive substring. Fast, over-fires in Latin."""
-    return term.lower() in text.lower()
+    return fold(term) in fold(text)
 
 
 def strat_word_boundary(text: str, term: str) -> bool:
     """#4.2(1) -- \\b for Latin scripts, substring for CJK (no boundaries)."""
-    t = term.lower()
+    t = fold(term)
     if is_cjk(term):
-        return t in text.lower()
-    return re.search(rf"\b{re.escape(t)}\b", text.lower()) is not None
+        return t in fold(text)
+    return re.search(rf"\b{re.escape(t)}\b", fold(text)) is not None
 
 
 def make_word_boundary_minlen(min_len: int) -> Strategy:
