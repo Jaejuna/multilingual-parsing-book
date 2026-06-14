@@ -52,8 +52,10 @@ snippets/
 │   └── templates.json               # demo templates
 ├── sql/                        # the same metrics, in Postgres
 │   └── quality_metrics.sql          # adherence/coverage/drift/mojibake queries
+├── pandas/                     # the same metrics, the data-analyst way
+│   └── corpus_metrics_pandas.py     # groupby/melt view; parity-tested vs ch.7
 └── tests/                      # pytest over the Part II tools
-    └── test_part2.py                # 16 tests, asserts planted defects are caught
+    └── test_part2.py                # 17 tests, asserts planted defects are caught
 ```
 
 ## How to read these
@@ -94,6 +96,7 @@ snippets/
 | Check if any language is systematically underserved | [`responsible-ai/coverage_bias.py`](./responsible-ai/coverage_bias.py) |
 | Synthesize a labeled intent + slot-filling dataset | [`nlu/build_intent_dataset.py`](./nlu/build_intent_dataset.py) |
 | Run the same metrics straight in Postgres | [`sql/quality_metrics.sql`](./sql/quality_metrics.sql) |
+| Compute the same metrics the pandas way (groupby/melt) | [`pandas/corpus_metrics_pandas.py`](./pandas/corpus_metrics_pandas.py) |
 
 Run the Part II test suite from this directory:
 

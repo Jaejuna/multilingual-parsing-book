@@ -539,6 +539,19 @@ python audit_corpus.py corpus.csv --format json --out report
 The auditor practices what the book preaches: it reads with `utf-8-sig`
 then falls back to cp949 (#1.5), and reuses the `lang_aliases` rule (#2).
 
+**Three views of the same metrics.** Knowing *which tool to reach for* is
+the actual skill, so these metrics are computed three ways:
+
+| view | when to use it | file |
+|------|----------------|------|
+| stdlib (`csv` + `Counter`) | zero-dependency, streamable drop-in | this chapter |
+| pandas (`groupby`/`melt`) | exploratory analysis, notebooks | [`snippets/pandas/corpus_metrics_pandas.py`](./snippets/pandas/corpus_metrics_pandas.py) |
+| SQL (window functions) | the data already lives in Postgres | [#13](#13-the-same-metrics-in-sql) |
+
+The pandas view is parity-tested against this one (same numbers on the same
+sample). For data that doesn't fit in RAM, a forthcoming scaling chapter
+reaches for polars/duckdb instead — pandas loads everything into memory.
+
 ## 8. Glossary adherence — closing the feedback loop
 
 Shipping a glossary is an *input*. The question product actually cares about
