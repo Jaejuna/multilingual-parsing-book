@@ -306,3 +306,86 @@ def test_error_cases_each_reproduce_a_bug():
         assert title and broke and fixed
         assert broke != fixed
     assert ec.main([]) == 0   # the whole catalog runs clean
+
+
+# --------------------------------------------------------------------------
+# ch.17 data -> model: Naive Bayes + label-noise curve
+# --------------------------------------------------------------------------
+
+
+def test_naive_bayes_learns_then_label_noise_collapses_it():
+    dqi = _load("data-model/data_quality_impact.py", "data_quality_impact")
+    curve = {r["noise"]: r["test_acc"] for r in dqi.run(n=1500, rates=[0.0, 0.5], seed=0)}
+    assert curve[0.0] > 0.75            # learns the clean task
+    assert curve[0.5] < 0.65            # ~50% wrong labels collapse it toward chance
+
+
+def test_naive_bayes_predicts_obvious_doc():
+    dqi = _load("data-model/data_quality_impact.py", "data_quality_impact")
+    import random
+    model = dqi.NaiveBayes().fit(dqi.make_dataset(800, random.Random(1)))
+    assert model.predict(["buy", "buy", "price", "cart"]) == "buy"
+
+
+# --------------------------------------------------------------------------
+# ch.18 similarity matching
+# --------------------------------------------------------------------------
+
+
+def test_fuzzy_matches_variants_rejects_unrelated():
+    fz = _load("matching-similarity/fuzzy_match.py", "fuzzy_match")
+    m = fz.FuzzyMatcher().fit(["cooldown", "respawn", "loot"])
+    assert m.match("cooldwn", threshold=0.5)[0] == "cooldown"     # typo
+    assert m.match("cool-down", threshold=0.5)[0] == "cooldown"   # variant
+    assert m.match("banana", threshold=0.5) is None               # unrelated
+
+
+# --------------------------------------------------------------------------
+# ch.19 KG depth: transitive reasoning + entity linking
+# --------------------------------------------------------------------------
+
+
+def test_lexicon_transitive_ancestors_and_linking():
+    rows = [
+        {"id": "object", "en": "object", "broader": "", "synonyms": ""},
+        {"id": "item", "en": "item", "broader": "object", "synonyms": ""},
+        {"id": "loot", "en": "loot", "broader": "item", "synonyms": ""},
+    ]
+    g, _ = lex.build(rows)
+    assert g.ancestors("loot") == ["item", "object"]        # transitive chain
+    assert set(g.descendants("object")) == {"item", "loot"}
+    linked = dict(g.link("collect the loot now"))
+    assert "loot" in linked
+
+
+def test_lexicon_detects_broader_cycle():
+    rows = [
+        {"id": "a", "en": "a", "broader": "b", "synonyms": ""},
+        {"id": "b", "en": "b", "broader": "a", "synonyms": ""},
+    ]
+    g, _ = lex.build(rows)
+    assert g.find_cycles()              # a -> b -> a must be reported
+
+
+# --------------------------------------------------------------------------
+# ch.20 multi-source integration
+# --------------------------------------------------------------------------
+
+
+def test_build_corpus_canon_lang():
+    bc = _load("multi-source/build_corpus.py", "build_corpus")
+    assert bc.canon_lang("ko_KR", False) == "ko-KR"
+    assert bc.canon_lang("KO-kr", False) == "ko-KR"
+    assert bc.canon_lang("EN", False) == "en"
+
+
+def test_build_corpus_merges_and_flags_conflict(tmp_path):
+    bc = _load("multi-source/build_corpus.py", "build_corpus")
+    a = tmp_path / "a.csv"
+    b = tmp_path / "b.csv"
+    a.write_text("key,ko-KR\nattack,공격\n", encoding="utf-8")
+    b.write_text("key,ko_KR\nattack,어택\n", encoding="cp949")   # cp949 + underscore
+    res = bc.merge([a, b], key_col="key", merge_base=False)
+    assert res["encodings"][b.name] == "cp949"
+    assert len(res["conflicts"]) == 1                  # 공격 vs 어택, same (key,lang)
+    assert res["value"][("attack", "ko-KR")][0] == "공격"   # first source wins

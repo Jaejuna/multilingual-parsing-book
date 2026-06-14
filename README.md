@@ -31,6 +31,10 @@ chapter that matches the bug you're chasing.
 14. [The same metrics in SQL](#14-the-same-metrics-in-sql)
 15. [Scaling to a corpus that doesn't fit in RAM](#15-scaling-to-a-corpus-that-doesnt-fit-in-ram)
 16. [Was the difference real? significance for the A/B](#16-was-the-difference-real-significance-for-the-ab)
+17. [Data quality, measured in model accuracy](#17-data-quality-measured-in-model-accuracy)
+18. [Similarity matching — catching what exact matching misses](#18-similarity-matching--catching-what-exact-matching-misses)
+19. [Reasoning over the lexicon](#19-reasoning-over-the-lexicon)
+20. [Merging heterogeneous sources into one corpus](#20-merging-heterogeneous-sources-into-one-corpus)
 
 **Appendix**
 
@@ -853,6 +857,112 @@ interval, and a paired significance test. The first is what juniors report; all
 three are what makes the call defensible. Runnable:
 [`snippets/experiments/strategy_ab.py`](./snippets/experiments/strategy_ab.py) `--significance`.
 
+## 17. Data quality, measured in model accuracy
+
+Every other chapter treats data as the product; this one connects it to what
+consumes it — a model. "Clean your labels" is advice until you can price it.
+[`data_quality_impact.py`](./snippets/data-model/data_quality_impact.py) trains an
+actual classifier — a standard-library multinomial Naive Bayes, just smoothed
+word counts in log space — on training data corrupted by a known amount of label
+noise, and scores it against a **clean** test set:
+
+```
+| train label noise | test accuracy | drop from clean |
+|                0% |         81.8% |            0.0% |
+|               40% |         81.3% |            0.4% |
+|               45% |         74.9% |            6.9% |
+|               50% |         46.7% |           35.1% |
+```
+
+The shape is the lesson, and it is not "more noise = linearly worse". Naive Bayes
+aggregates counts over the whole training set, so moderate label noise mostly
+averages out — accuracy barely moves up to ~40% — then collapses toward chance as
+the labels approach 50% wrong. The data-quality budget is real but nuanced: a
+robust model tolerates some noise, and this curve says how much, in points of
+accuracy. (The test set is never corrupted — we measure how bad *training* data
+hurts a model judged against the truth.) It also earns the book a real, if tiny,
+ML model so the data→model link isn't hand-waved.
+
+## 18. Similarity matching — catching what exact matching misses
+
+Chapter 4's matchers are exact: `cooldown` matches `cooldown` and nothing else.
+Real input brings `cool-down`, `cooldwn` (typo), `cooldowns` (plural). The move
+that recovers them is to stop comparing strings and compare *representations* —
+turn each term into a vector and measure cosine similarity.
+[`fuzzy_match.py`](./snippets/matching-similarity/fuzzy_match.py) does it with
+character n-gram TF-IDF: no model, no dependency, but a genuine vector space.
+
+```
+| query     | exact? | best fuzzy | score |
+| cooldown  | hit    | cooldown   | 1.00  |
+| cool-down | miss   | cooldown   | 0.86  |
+| cooldwn   | miss   | cooldown   | 0.78  |
+| cooldowns | miss   | cooldown   | 0.96  |
+| banana    | miss   | cooldown   | 0.00  |
+```
+
+Exact matching fires only on the first row; fuzzy recovers the variants and still
+rejects the unrelated word. Why character n-grams, not word embeddings: they are
+robust to typos and morphology, need no pretrained model, and survive the mixed
+scripts this book deals with — at the cost of capturing *surface* similarity, not
+*meaning*. `big` and `large` are synonyms with no shared characters, so this will
+not link them; that is where real embeddings earn their weight. Know which problem
+you have. This is the on-ramp from rules (#4) to learned representations.
+
+## 19. Reasoning over the lexicon
+
+Chapter 11 built a concept graph but only read the direct `broader` edge. The
+questions that make a knowledge graph worth having are transitive: what are *all*
+the ancestors of `loot`, what falls under `object`, and which concepts does a
+sentence mention? [`build_lexicon.py`](./snippets/knowledge-graph/build_lexicon.py)
+now answers them.
+
+```
+$ build_lexicon.py glossary_lex.csv --ancestors loot
+loot ⊂ item ⊂ object
+
+$ build_lexicon.py glossary_lex.csv --link "collect the loot then check cooldown"
+  'cooldown' -> concept:cooldown  {...}
+  'loot'     -> concept:loot       {...}
+```
+
+- `ancestors`/`descendants` walk the `broader` chain **transitively**, with a
+  cycle guard — that transitive ancestry is what lets a concept inherit its
+  parent's domain
+- `find_cycles()` rejects a broken `a → b → a` hierarchy (otherwise traversal
+  never terminates)
+- `link()` is **entity linking**: it scans free text for glossary surface forms
+  (word boundary for Latin #4, substring for CJK) and resolves each to its
+  concept, longest surface first so "AI Director" beats "AI"
+
+Transitive reasoning plus entity linking turn the flat lexicon of #11 into
+something you can actually query and connect to running text.
+
+## 20. Merging heterogeneous sources into one corpus
+
+A dataset is rarely one tidy file; it is a folder of exports — one saved cp949 by
+Excel (#1), one with `ko_KR` headers and another with `ko-KR` (#2), overlapping
+keys, and the same key translated two different ways in two files. Concatenating
+blindly yields mojibake, split columns, duplicates, and silent conflicts.
+[`build_corpus.py`](./snippets/multi-source/build_corpus.py) merges properly and,
+crucially, **reports**:
+
+```
+- source2_cp949.csv: decoded cp949  ⚠️ legacy, contributed 2 cells
+- merged languages: ko-KR, en-US, en, zh-CN
+- conflicts: 2
+| key    | lang  | kept | from    | dropped | from    |
+| attack | ko-KR | 공격 | source1 | 어택    | source2 |
+```
+
+It is Part I's capstone: encoding fallback (#1, utf-8-sig then cp949), lang-code
+canonicalization (#2, `ko_KR`/`KO-KR` → `ko-KR`), plus the two things a merge
+needs — **conflict detection** (same key + language, different value; first
+source wins, the loser is reported, never silently dropped) and **provenance**
+(which source each value came from). Base `ko` and locale `ko-KR` stay distinct
+columns by default — collapsing them loses region (#2's `zh-CN` vs `zh-TW`
+trade-off); `--merge-base` folds them when you accept that.
+
 ---
 
 # Appendix
@@ -942,6 +1052,10 @@ project — they're self-contained.
 | Corpus won't fit in RAM — streaming (O(1)) vs load | [`benchmark/stream_vs_load.py`](./snippets/benchmark/stream_vs_load.py) |
 | Bigger than RAM + analytic queries (DuckDB/polars) | [`scale/out_of_core.py`](./snippets/scale/out_of_core.py) |
 | Reproduce the bugs hit building this book | [`debug/error_cases.py`](./snippets/debug/error_cases.py) |
+| Price label noise in points of model accuracy | [`data-model/data_quality_impact.py`](./snippets/data-model/data_quality_impact.py) |
+| Match term variants/typos with no model | [`matching-similarity/fuzzy_match.py`](./snippets/matching-similarity/fuzzy_match.py) |
+| Transitive ancestors / entity-link free text to concepts | [`knowledge-graph/build_lexicon.py`](./snippets/knowledge-graph/build_lexicon.py) |
+| Merge messy multi-source CSVs (encoding/lang-code/conflicts) | [`multi-source/build_corpus.py`](./snippets/multi-source/build_corpus.py) |
 
 ### Field notes — bugs hit building this book
 

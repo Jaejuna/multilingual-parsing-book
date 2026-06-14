@@ -106,6 +106,81 @@ class Graph:
         cid = self.surface_index.get(surface.strip().lower())
         return self.concepts.get(cid) if cid else None
 
+    # ---- reasoning: a flat table can't answer these; a graph can -----------
+
+    def ancestors(self, cid: str) -> list[str]:
+        """Transitive `broader` chain: loot -> item -> object. A flat glossary
+        only knows the direct parent; following the chain (with a cycle guard)
+        is what makes domain/type inheritance possible."""
+        out: list[str] = []
+        seen = {cid}
+        cur = self.concepts.get(cid)
+        while cur and cur.broader and cur.broader not in seen:
+            out.append(cur.broader)
+            seen.add(cur.broader)
+            cur = self.concepts.get(cur.broader)
+        return out
+
+    def descendants(self, cid: str) -> list[str]:
+        """Everything transitively narrower than `cid` (inverse of broader)."""
+        children = {c.id: [k for k, v in self.concepts.items() if v.broader == c.id]
+                    for c in self.concepts.values()}
+        out: list[str] = []
+        stack = list(children.get(cid, []))
+        seen: set[str] = set()
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            out.append(n)
+            stack.extend(children.get(n, []))
+        return out
+
+    def find_cycles(self) -> list[list[str]]:
+        """Detect broken broader-chains that loop (a -> b -> a). A real KG must
+        reject these or traversal never terminates."""
+        cycles: list[list[str]] = []
+        for start in self.concepts:
+            path: list[str] = []
+            seen: set[str] = set()
+            cur: str | None = start
+            while cur and cur in self.concepts:
+                if cur in seen:
+                    if cur == start:
+                        cycles.append(path + [cur])
+                    break
+                seen.add(cur)
+                path.append(cur)
+                cur = self.concepts[cur].broader
+        # dedupe rotations
+        uniq: list[list[str]] = []
+        for c in cycles:
+            if not any(set(c) == set(u) for u in uniq):
+                uniq.append(c)
+        return uniq
+
+    def link(self, text: str) -> list[tuple[str, str]]:
+        """Entity linking: find glossary surface forms in free text and resolve
+        them to concepts. Returns (concept_id, matched_surface) pairs. Latin
+        forms need a word boundary (#4); CJK forms match as substrings."""
+        import re as _re
+        hits: list[tuple[str, str]] = []
+        low = text.lower()
+        seen_ids: set[str] = set()
+        # longest surface first so "AI Director" wins over "ai"
+        for surface in sorted(self.surface_index, key=len, reverse=True):
+            cid = self.surface_index[surface]
+            if cid in seen_ids:
+                continue
+            is_cjk = any(ord(ch) > 0x2E7F for ch in surface)
+            found = (surface in low) if is_cjk else \
+                bool(_re.search(rf"\b{_re.escape(surface)}\b", low))
+            if found:
+                hits.append((cid, surface))
+                seen_ids.add(cid)
+        return hits
+
     def triples(self) -> list[tuple[str, str, str]]:
         """Flatten to (subject, predicate, object) triples."""
         out: list[tuple[str, str, str]] = []
@@ -242,6 +317,9 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Build a multilingual lexicon graph from a glossary.")
     p.add_argument("glossary", type=Path)
     p.add_argument("--lookup", help="resolve a surface form (any language) to its concept")
+    p.add_argument("--ancestors", help="print the transitive broader chain of a concept id")
+    p.add_argument("--descendants", help="print everything transitively narrower than a concept id")
+    p.add_argument("--link", help="entity-link: find glossary concepts mentioned in free text")
     p.add_argument("--format", choices=["stats", "json", "triples"], default="stats")
     p.add_argument("--out", help="output path stem (extension added per format)")
     args = p.parse_args(argv)
@@ -255,8 +333,34 @@ def main(argv: list[str] | None = None) -> int:
 
     g, warnings = build(read_csv_smart(args.glossary))
 
+    cycles = g.find_cycles()
+    if cycles:
+        for c in cycles:
+            print(f"⚠️ broader cycle: {' -> '.join(c)}", file=sys.stderr)
+
     if args.lookup:
         print(lookup_markdown(g, args.lookup))
+        return 0
+
+    if args.ancestors:
+        chain = g.ancestors(args.ancestors)
+        print(f"{args.ancestors} ⊂ " + " ⊂ ".join(chain) if chain
+              else f"{args.ancestors}: no broader concept")
+        return 0
+
+    if args.descendants:
+        kids = g.descendants(args.descendants)
+        print(f"narrower than {args.descendants}: {', '.join(kids) or '(none)'}")
+        return 0
+
+    if args.link:
+        hits = g.link(args.link)
+        print(f"text: {args.link!r}")
+        for cid, surface in hits:
+            labels = g.concepts[cid].labels
+            print(f"  '{surface}' -> concept:{cid}  {labels}")
+        if not hits:
+            print("  (no glossary concepts found)")
         return 0
 
     rendered = {

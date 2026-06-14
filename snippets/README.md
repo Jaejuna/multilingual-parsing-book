@@ -60,9 +60,18 @@ snippets/
 │   └── stream_vs_load.py            # Welford O(1) memory vs load-everything
 ├── scale/                      # ch.15 out-of-core
 │   └── out_of_core.py               # coverage via stdlib / DuckDB / polars (parity)
+├── data-model/                 # ch.17 data quality -> model performance
+│   └── data_quality_impact.py       # label-noise vs accuracy (stdlib Naive Bayes)
+├── matching-similarity/        # ch.18 beyond exact matching
+│   └── fuzzy_match.py               # char n-gram TF-IDF cosine; variant/typo recall
+├── multi-source/               # ch.20 merge heterogeneous CSVs
+│   └── build_corpus.py              # encoding/lang-code normalize + conflict + provenance
 └── tests/                      # pytest over the Part II tools
-    └── test_part2.py                # 20 tests, asserts planted defects are caught
+    └── test_part2.py                # 31 tests, asserts planted defects are caught
 ```
+
+(ch.19's transitive reasoning + entity linking extend
+[`knowledge-graph/build_lexicon.py`](./knowledge-graph/build_lexicon.py).)
 
 ## How to read these
 
@@ -107,6 +116,10 @@ snippets/
 | Prove naive matching is too slow at scale | [`benchmark/bench_matching.py`](./benchmark/bench_matching.py) |
 | Audit a corpus too big for RAM (streaming / out-of-core) | [`benchmark/stream_vs_load.py`](./benchmark/stream_vs_load.py), [`scale/out_of_core.py`](./scale/out_of_core.py) |
 | Reproduce the bugs hit building this book | [`debug/error_cases.py`](./debug/error_cases.py) |
+| Price label noise in points of model accuracy | [`data-model/data_quality_impact.py`](./data-model/data_quality_impact.py) |
+| Match term variants/typos with no model | [`matching-similarity/fuzzy_match.py`](./matching-similarity/fuzzy_match.py) |
+| Transitive ancestors / entity-link text to concepts | [`knowledge-graph/build_lexicon.py`](./knowledge-graph/build_lexicon.py) |
+| Merge messy multi-source CSVs into one corpus | [`multi-source/build_corpus.py`](./multi-source/build_corpus.py) |
 
 Run the Part II test suite from this directory:
 
