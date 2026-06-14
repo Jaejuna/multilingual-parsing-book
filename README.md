@@ -22,19 +22,20 @@ chapter that matches the bug you're chasing.
 **Part II — dataset engineering for ML**
 
 7. [Auditing a corpus as data](#7-auditing-a-corpus-as-data)
-8. [Glossary adherence — closing the feedback loop](#8-glossary-adherence--closing-the-feedback-loop)
-9. [A/B-testing a matcher change](#9-ab-testing-a-matcher-change)
-10. [From glossary to lexicon / knowledge graph](#10-from-glossary-to-lexicon--knowledge-graph)
-11. [Language equity — a responsible-AI screen](#11-language-equity--a-responsible-ai-screen)
-12. [Building an NLU intent + slot dataset](#12-building-an-nlu-intent--slot-dataset)
-13. [The same metrics in SQL](#13-the-same-metrics-in-sql)
+8. [The same metrics, the pandas way](#8-the-same-metrics-the-pandas-way)
+9. [Glossary adherence — closing the feedback loop](#9-glossary-adherence--closing-the-feedback-loop)
+10. [A/B-testing a matcher change](#10-ab-testing-a-matcher-change)
+11. [From glossary to lexicon / knowledge graph](#11-from-glossary-to-lexicon--knowledge-graph)
+12. [Language equity — a responsible-AI screen](#12-language-equity--a-responsible-ai-screen)
+13. [Building an NLU intent + slot dataset](#13-building-an-nlu-intent--slot-dataset)
+14. [The same metrics in SQL](#14-the-same-metrics-in-sql)
 
 **Appendix**
 
-14. [Pre-work checklist](#14-pre-work-checklist)
-15. [Snippet index](#15-snippet-index)
-16. [Debugging commands](#16-debugging-commands)
-17. [References](#17-references)
+- A. [Pre-work checklist](#a-pre-work-checklist)
+- B. [Snippet index](#b-snippet-index)
+- C. [Debugging commands](#c-debugging-commands)
+- D. [References](#d-references)
 
 ---
 
@@ -539,20 +540,71 @@ python audit_corpus.py corpus.csv --format json --out report
 The auditor practices what the book preaches: it reads with `utf-8-sig`
 then falls back to cp949 (#1.5), and reuses the `lang_aliases` rule (#2).
 
-**Three views of the same metrics.** Knowing *which tool to reach for* is
-the actual skill, so these metrics are computed three ways:
+The same corpus metrics are expressed two other ways for contrast — in
+pandas (#8) and in SQL (#14) — so picking a tool becomes a deliberate choice
+rather than a default.
 
-| view | when to use it | file |
-|------|----------------|------|
-| stdlib (`csv` + `Counter`) | zero-dependency, streamable drop-in | this chapter |
-| pandas (`groupby`/`melt`) | exploratory analysis, notebooks | [`snippets/pandas/corpus_metrics_pandas.py`](./snippets/pandas/corpus_metrics_pandas.py) |
-| SQL (window functions) | the data already lives in Postgres | [#13](#13-the-same-metrics-in-sql) |
+## 8. The same metrics, the pandas way
 
-The pandas view is parity-tested against this one (same numbers on the same
-sample). For data that doesn't fit in RAM, a forthcoming scaling chapter
-reaches for polars/duckdb instead — pandas loads everything into memory.
+Chapter 7 computed corpus quality in the standard library; #14 computes it in
+SQL. This is the third view: pandas, the lingua franca of data analysis. The
+skill on display is not pandas itself — it is knowing *which* tool a question
+wants.
 
-## 8. Glossary adherence — closing the feedback loop
+| view | reach for it when | cost |
+|------|-------------------|------|
+| stdlib (#7) | zero-dependency, streamable drop-in | verbose |
+| pandas (here) | exploratory analysis, notebooks, ad-hoc pivots | loads all into RAM |
+| SQL (#14) | the data already lives in Postgres | round-trips |
+
+### Vectorized, not looped
+
+The stdlib auditor walks rows with a `Counter`. pandas expresses the same
+questions as whole-column operations:
+
+```python
+nonempty = cells.replace("", pd.NA).notna()
+coverage = nonempty.mean()                       # fill rate per language
+dup_keys = df[key].str.strip().duplicated().sum()
+```
+
+### Parity is the contract
+
+A tool you can't check against a known-good baseline is useless, so a test
+asserts the pandas view returns the *same numbers* as #7 on the same sample
+(`test_pandas_parity_with_stdlib_audit`):
+
+```
+coverage ja_JP: stdlib=0.875  pandas=0.875
+dup_keys:       stdlib=1      pandas=1
+len_outliers:   stdlib=2      pandas=2      PARITY: ALL MATCH
+```
+
+### The vectorization gotcha
+
+Getting parity took a fix. A blank target cell has length 0, and `0 / base`
+is a ratio of 0 — which the outlier rule reads as "absurdly short" and flags.
+The stdlib loop skipped absent cells; the vectorized version silently counted
+them. The fix maps empty -> `NA` so missing cells drop out of both the median
+and the mask:
+
+```python
+tgt_len = cells.str.len().replace(0, pd.NA)      # empty -> NA, not 0
+```
+
+Lesson: vectorized code is fast but does not handle "missing vs zero vs empty"
+for you — that distinction is the heart of real pandas work, not API recall.
+
+### When pandas is the wrong call
+
+- the data doesn't fit in RAM -> a forthcoming scaling chapter uses polars
+  (lazy) / duckdb (out-of-core); pandas would OOM
+- you need a zero-dependency drop-in -> #7 stdlib
+- the data already lives in a warehouse -> #14 SQL
+
+Runnable: [`snippets/pandas/corpus_metrics_pandas.py`](./snippets/pandas/corpus_metrics_pandas.py).
+
+## 9. Glossary adherence — closing the feedback loop
 
 Shipping a glossary is an *input*. The question product actually cares about
 is the *outcome*: did the model use it?
@@ -573,7 +625,7 @@ whether the injected term *survived*. Matching is script-aware — `\b` for
 Latin, substring for CJK (#4.2). It does **not** judge fluency; that's a
 separate LLM-as-judge tool, deliberately out of scope.
 
-## 9. A/B-testing a matcher change
+## 10. A/B-testing a matcher change
 
 README #4 lists matching strategies in prose, where bad decisions hide.
 Before swapping the production matcher you owe product a number.
@@ -592,7 +644,7 @@ min-length guard kills 2-char terms (`AI`, `OK`). This is the "design and
 conduct product experiments" muscle: fixed control set, candidate variants,
 one metric, one winner.
 
-## 10. From glossary to lexicon / knowledge graph
+## 11. From glossary to lexicon / knowledge graph
 
 A flat glossary answers "how do I say X in Japanese" and nothing else. The
 moment you need "which terms are in the COMBAT domain" or "given 戦利品, what
@@ -616,7 +668,7 @@ python build_lexicon.py glossary_lex.csv --lookup 戦利品   # -> concept 'loot
 python build_lexicon.py glossary_lex.csv --format triples --out lexicon
 ```
 
-## 11. Language equity — a responsible-AI screen
+## 12. Language equity — a responsible-AI screen
 
 Aggregate quality numbers hide disparity: "92% coverage" can mean every
 language is at 92%, or English at 100% and five languages at 70%.
@@ -636,7 +688,7 @@ also **caveats its own metric**: char-length comparison over-flags dense
 scripts (CJK), so `too-short` is a within-script screen, not a verdict —
 metric self-awareness is part of responsible-AI review.
 
-## 12. Building an NLU intent + slot dataset
+## 13. Building an NLU intent + slot dataset
 
 The voice-assistant NLU model needs labeled utterances: each tagged with an
 intent and slot spans. Hand-writing thousands per language guarantees
@@ -654,7 +706,7 @@ automatically**, so labels are always exact — including CJK:
 It also reports class balance and warns on thin `(lang, intent)` cells, the
 ASR/NLU-facing complement to the rest of the book.
 
-## 13. The same metrics in SQL
+## 14. The same metrics in SQL
 
 When the data already landed in Postgres, you don't export — you query.
 [`quality_metrics.sql`](./snippets/sql/quality_metrics.sql) expresses the
@@ -668,16 +720,16 @@ columns are double-quoted throughout (#6.2).
 
 # Appendix
 
-## 14. Pre-work checklist
+## A. Pre-work checklist
 
-### 14.1 Before ingesting multilingual text
+### A.1 Before ingesting multilingual text
 
 - [ ] Where is the decode step (browser? server? both)?
 - [ ] What's the assumed encoding? Are non-UTF-8 inputs possible?
 - [ ] BOM handling?
 - [ ] NFC/NFD normalization required? (macOS filenames, Hangul jamo)
 
-### 14.2 When handling lang codes
+### A.2 When handling lang codes
 
 - [ ] Do base (`ko`) and locale (`ko-KR`) forms appear in the same
       code path?
@@ -685,7 +737,7 @@ columns are double-quoted throughout (#6.2).
 - [ ] Do you need to preserve region (`zh-CN` vs `zh-TW`)?
 - [ ] Casing? Hyphen vs underscore?
 
-### 14.3 When writing a term matcher
+### A.3 When writing a term matcher
 
 - [ ] CJK vs Latin word-boundary semantics?
 - [ ] `min_len` guard against single-character noise?
@@ -694,7 +746,7 @@ columns are double-quoted throughout (#6.2).
 - [ ] Performance: at terms × segments > 1M, reconsider data
       structure.
 
-### 14.4 When implementing upload/download
+### A.4 When implementing upload/download
 
 - [ ] Upload: read raw bytes and detect encoding (NEVER `File.text()`
       on user-controlled CSV).
@@ -703,7 +755,7 @@ columns are double-quoted throughout (#6.2).
 - [ ] BOM the export if Excel is the likely consumer.
 - [ ] Match Content-Type on presigned PUT requests.
 
-### 14.5 When crossing two DB boundaries
+### A.5 When crossing two DB boundaries
 
 - [ ] Is migration ownership explicit?
 - [ ] When does cached state become stale?
@@ -711,14 +763,14 @@ columns are double-quoted throughout (#6.2).
 - [ ] If a transaction straddles both stacks, how is partial failure
       handled?
 
-### 14.6 When storing evaluation / debug data
+### A.6 When storing evaluation / debug data
 
 - [ ] Does this benefit from normalization (indexing, analytics)?
 - [ ] How big is the per-row payload? (KB per row → reconsider)
 - [ ] What's the retention policy?
 - [ ] Any PII?
 
-### 14.7 When resolving per-locale content files
+### A.7 When resolving per-locale content files
 
 - [ ] Are locale variants (`*.en.mdx`) excluded from the base listing?
 - [ ] Does a missing variant fall back to the base file?
@@ -729,7 +781,7 @@ columns are double-quoted throughout (#6.2).
 
 ---
 
-## 15. Snippet index
+## B. Snippet index
 
 Every pattern above has a runnable equivalent in
 [`snippets/`](./snippets/). Pick a single file and drop it into another
@@ -752,7 +804,7 @@ project — they're self-contained.
 
 ---
 
-## 16. Debugging commands
+## C. Debugging commands
 
 ### Suspect a file encoding
 
@@ -808,7 +860,7 @@ encoding. CLI version: [`snippets/debug/mojibake_trace.py`](./snippets/debug/moj
 
 ---
 
-## 17. References
+## D. References
 
 - [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/) —
   `TextDecoder` supported encodings.
