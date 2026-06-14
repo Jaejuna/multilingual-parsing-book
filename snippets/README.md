@@ -29,7 +29,8 @@ snippets/
 ├── debug/                      # one-shot diagnostic tools
 │   ├── inspect-file-encoding.ps1    # PowerShell encoding inspector
 │   ├── inspect-file-encoding.sh     # bash equivalent
-│   └── mojibake_trace.py            # CLI: "I see mojibake, what was it?"
+│   ├── mojibake_trace.py            # CLI: "I see mojibake, what was it?"
+│   └── error_cases.py               # runnable catalog of bugs hit building the book
 │
 │   # ── Part II: dataset engineering for ML ────────────────────────────
 ├── dataset-quality/            # audit a corpus as data
@@ -54,8 +55,13 @@ snippets/
 │   └── quality_metrics.sql          # adherence/coverage/drift/mojibake queries
 ├── pandas/                     # the same metrics, the data-analyst way
 │   └── corpus_metrics_pandas.py     # groupby/melt view; parity-tested vs ch.7
+├── benchmark/                  # ch.15 scaling proofs (numbers, not adjectives)
+│   ├── bench_matching.py            # naive O(terms×seg) vs Aho-Corasick O(N)
+│   └── stream_vs_load.py            # Welford O(1) memory vs load-everything
+├── scale/                      # ch.15 out-of-core
+│   └── out_of_core.py               # coverage via stdlib / DuckDB / polars (parity)
 └── tests/                      # pytest over the Part II tools
-    └── test_part2.py                # 17 tests, asserts planted defects are caught
+    └── test_part2.py                # 20 tests, asserts planted defects are caught
 ```
 
 ## How to read these
@@ -97,6 +103,9 @@ snippets/
 | Synthesize a labeled intent + slot-filling dataset | [`nlu/build_intent_dataset.py`](./nlu/build_intent_dataset.py) |
 | Run the same metrics straight in Postgres | [`sql/quality_metrics.sql`](./sql/quality_metrics.sql) |
 | Compute the same metrics the pandas way (groupby/melt) | [`pandas/corpus_metrics_pandas.py`](./pandas/corpus_metrics_pandas.py) |
+| Prove naive matching is too slow at scale | [`benchmark/bench_matching.py`](./benchmark/bench_matching.py) |
+| Audit a corpus too big for RAM (streaming / out-of-core) | [`benchmark/stream_vs_load.py`](./benchmark/stream_vs_load.py), [`scale/out_of_core.py`](./scale/out_of_core.py) |
+| Reproduce the bugs hit building this book | [`debug/error_cases.py`](./debug/error_cases.py) |
 
 Run the Part II test suite from this directory:
 

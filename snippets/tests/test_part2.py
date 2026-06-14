@@ -229,3 +229,55 @@ def test_pandas_parity_with_stdlib_audit():
     assert prep["duplicate_keys"] == rep.metrics.get("duplicate_key")
     assert list(prep["lang_code_conflicts"]) == list(rep.lang_code_conflicts)
     assert prep["length_outliers"] == rep.metrics.get("length_outlier")
+
+
+# --------------------------------------------------------------------------
+# ch.15 scaling: benchmark correctness, Welford, out-of-core parity
+# --------------------------------------------------------------------------
+
+
+def test_bench_naive_and_ac_agree():
+    import random
+    bench = _load("benchmark/bench_matching.py", "bench_matching")
+    rng = random.Random(0)
+    terms = bench.make_terms(300, rng)
+    segs = bench.make_segments(500, terms, rng)
+    matcher = bench.ac.build_matcher(terms, min_len=2)
+    # The whole point of the benchmark: the fast path must be a drop-in for the
+    # slow path, identical results — only faster.
+    assert bench.naive_match(segs, terms, 2) == bench.ac_search(segs, matcher)
+
+
+def test_welford_matches_batch_statistics():
+    import statistics
+    svl = _load("benchmark/stream_vs_load.py", "stream_vs_load")
+    vals = list(svl.ratios(5000))
+    w = svl.Welford()
+    for v in vals:
+        w.update(v)
+    assert w.mean == pytest.approx(statistics.fmean(vals), rel=1e-9)
+    assert w.stdev == pytest.approx(statistics.stdev(vals), rel=1e-6)
+
+
+def test_out_of_core_backends_match_stdlib(tmp_path):
+    ooc = _load("scale/out_of_core.py", "out_of_core")
+    path = tmp_path / "corpus.csv"
+    ooc.write_corpus(path, 6000)
+    base = ooc.coverage_stdlib(path)
+    for backend in (ooc.coverage_duckdb, ooc.coverage_polars):
+        res = backend(path)
+        if res is None:
+            continue   # optional dependency absent -> skip that backend
+        for lang, cov in base.items():
+            assert abs(res.get(lang, 0) - cov) < 1e-3
+
+
+def test_error_cases_each_reproduce_a_bug():
+    ec = _load("debug/error_cases.py", "error_cases")
+    # Each field-note case returns (title, broken, fixed); broken must actually
+    # show the failure (an exception text or a wrong value), fixed must differ.
+    for fn in ec.CASES:
+        title, broke, fixed = fn()
+        assert title and broke and fixed
+        assert broke != fixed
+    assert ec.main([]) == 0   # the whole catalog runs clean

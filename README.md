@@ -29,6 +29,7 @@ chapter that matches the bug you're chasing.
 12. [Language equity — a responsible-AI screen](#12-language-equity--a-responsible-ai-screen)
 13. [Building an NLU intent + slot dataset](#13-building-an-nlu-intent--slot-dataset)
 14. [The same metrics in SQL](#14-the-same-metrics-in-sql)
+15. [Scaling to a corpus that doesn't fit in RAM](#15-scaling-to-a-corpus-that-doesnt-fit-in-ram)
 
 **Appendix**
 
@@ -716,6 +717,84 @@ lang-code form drift (#2), a mojibake screen (#1), copy-through detection,
 and augmenter health from the JSONB `augmenter_log`. Prisma's camelCase
 columns are double-quoted throughout (#6.2).
 
+## 15. Scaling to a corpus that doesn't fit in RAM
+
+The Part II tools load the whole corpus with `rows = list(reader)` and match
+terms with a `for term in terms` loop. Both are fine for a vendor CSV and both
+fall over at Meta scale. This chapter replaces each with a technique that
+scales — and, in the spirit of the book, proves it with numbers rather than
+adjectives.
+
+### Time: Aho-Corasick vs the naive loop
+
+The naive loop rescans every term for every segment — O(terms × text). The
+Aho-Corasick automaton compiles all terms once and makes a single pass —
+O(text + matches), independent of the term count.
+
+```
+| terms | naive (ms) | AC search (ms) | search speed-up | counts agree |
+|    50 |        8.5 |           12.1 |            0.7x | yes |
+|   200 |       46.0 |           18.0 |            2.6x | yes |
+|  1000 |      150.7 |           14.6 |           10.3x | yes |
+|  5000 |      912.7 |           26.6 |           34.4x | yes |
+```
+
+Note the honest crossover: at 50 terms the naive loop *wins* — the automaton's
+build/overhead isn't amortized yet. By 5,000 terms Aho-Corasick is ~34× faster
+and its search time stays roughly flat. Reach for it only past the crossover,
+not reflexively. Runnable: [`snippets/benchmark/bench_matching.py`](./snippets/benchmark/bench_matching.py).
+
+### Memory: Welford vs load-everything
+
+Most checks stream trivially: read a row, bump a counter, discard the row. The
+holdout is the length-ratio outlier (#7), which needs a *median* — and a median
+needs every value at once. Welford's online algorithm sidesteps that: it keeps
+a running mean and variance in O(1) memory, so outliers are flagged by z-score
+in a single pass.
+
+```
+| rows      | load peak (KB) | stream peak (KB) |
+|    10,000 |            725 |                0 |
+|   100,000 |          3,129 |                0 |
+| 1,000,000 |         31,691 |                0 |
+```
+
+Load-everything peak memory climbs with the row count; the streaming peak is
+flat — three floats, regardless of how many rows go by. Runnable:
+[`snippets/benchmark/stream_vs_load.py`](./snippets/benchmark/stream_vs_load.py).
+
+The one check that genuinely cannot be O(1) is **exact duplicate detection** —
+it must remember every key seen. Be honest about that boundary: accept
+O(distinct keys) memory, sort externally first, or use an approximate structure
+(a Bloom filter). Don't pretend a stateful check is stateless.
+
+### Beyond one machine: columnar engines
+
+When you want real analytic queries (group-bys, joins, percentiles) over data
+that won't fit in RAM, stop hand-rolling streaming aggregators and reach for a
+columnar engine that streams from disk — DuckDB (SQL over files) or polars
+(lazy DataFrame). This is the production escalation of #8 (pandas) and #14 (SQL):
+
+```python
+duckdb.execute('''
+  SELECT lang, AVG(CASE WHEN trim(text) <> '' THEN 1.0 ELSE 0 END) AS coverage
+  FROM read_csv(?, header=true) GROUP BY lang''', [path])   # streams from disk
+```
+
+[`snippets/scale/out_of_core.py`](./snippets/scale/out_of_core.py) computes the
+same coverage three ways — stdlib stream, DuckDB, polars lazy — and asserts they
+agree. DuckDB/polars are optional heavy dependencies (like `pyahocorasick` in
+#4); the stdlib path always runs.
+
+### Decision rule
+
+| situation | reach for |
+|-----------|-----------|
+| past the term-count crossover | Aho-Corasick (#4) |
+| streaming stats, one pass | Welford z-score (not median) |
+| bigger than RAM + analytic queries | DuckDB / polars |
+| still fits in RAM | the simpler #7 / #8 tools |
+
 ---
 
 # Appendix
@@ -801,6 +880,38 @@ project — they're self-contained.
 | Hangul filename garbled in Firefox/Safari downloads | [`download/content-disposition-rfc5987.ts`](./snippets/download/content-disposition-rfc5987.ts) |
 | Large CSV export times out | [`download/streaming-csv-export.ts`](./snippets/download/streaming-csv-export.ts) |
 | Quick triage: "what encoding is this file?" | [`debug/inspect-file-encoding.ps1`](./snippets/debug/inspect-file-encoding.ps1) / [`.sh`](./snippets/debug/inspect-file-encoding.sh) |
+| Term loop too slow at scale — prove the crossover | [`benchmark/bench_matching.py`](./snippets/benchmark/bench_matching.py) |
+| Corpus won't fit in RAM — streaming (O(1)) vs load | [`benchmark/stream_vs_load.py`](./snippets/benchmark/stream_vs_load.py) |
+| Bigger than RAM + analytic queries (DuckDB/polars) | [`scale/out_of_core.py`](./snippets/scale/out_of_core.py) |
+| Reproduce the bugs hit building this book | [`debug/error_cases.py`](./snippets/debug/error_cases.py) |
+
+### Field notes — bugs hit building this book
+
+Every gotcha in this book was shipped, hit, and fixed; building Part II was no
+exception, and several bugs we hit were the book's *own* lessons biting back.
+Each is reproduced runnably (broken behaviour next to the fix) in
+[`snippets/debug/error_cases.py`](./snippets/debug/error_cases.py).
+
+1. **Console that proved #1.** `UnicodeEncodeError: 'cp949' codec can't encode '—'`
+   when a tool printed its report — the Windows console is cp949. Fix:
+   `sys.stdout.reconfigure(encoding="utf-8")`, now in every Part II CLI.
+2. **A mojibake regex that missed mojibake.** The first pattern matched only
+   `Ã`/`Â` leads; Korean-UTF-8-as-latin1 starts at `ë` (U+00EB). Fix: match the
+   real signature, lead U+00C2–00F4 + continuation U+0080–00BF.
+3. **dataclasses + importlib.** Loading a tool by path raised `AttributeError:
+   'NoneType' object has no attribute '__dict__'` — `@dataclass` resolves
+   annotations via `sys.modules[cls.__module__]`. Fix: register in
+   `sys.modules` before `exec_module`.
+4. **pandas counted blanks as outliers.** A blank cell's length 0 gives ratio 0
+   → false "too-short" (#8). Fix: map empty → `NA` before the ratio.
+5. **polars read "" as null.** A boolean built from null skews the group mean.
+   Fix: `fill_null("")` first.
+6. **An LCG that wasn't random enough.** Its *low* bit correlated with a
+   6-language cycle → degenerate 0/1 coverage. Fix: use a *high* bit.
+7. **Piping between two Python processes.** Surrogate-escaped bytes leaked
+   across the pipe (`'\udceb' ... surrogates not allowed`). Fix: one process, or
+   `PYTHONIOENCODING` for both — encoding boundaries (#1) exist between your own
+   processes too.
 
 ---
 
