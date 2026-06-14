@@ -18,20 +18,23 @@ chapter that matches the bug you're chasing.
 4. [Glossary matching — the substring pitfall](#4-glossary-matching--the-substring-pitfall)
 5. [File downloads — RFC 5987 Content-Disposition](#5-file-downloads--rfc-5987-content-disposition)
 6. [Two ORMs, one Postgres — boundary discipline](#6-two-orms-one-postgres--boundary-discipline)
-7. [Pre-work checklist](#7-pre-work-checklist)
-8. [Snippet index](#8-snippet-index)
-9. [Debugging commands](#9-debugging-commands)
-18. [References](#18-references)
 
 **Part II — dataset engineering for ML**
 
-11. [Auditing a corpus as data](#11-auditing-a-corpus-as-data)
-12. [Glossary adherence — closing the feedback loop](#12-glossary-adherence--closing-the-feedback-loop)
-13. [A/B-testing a matcher change](#13-ab-testing-a-matcher-change)
-14. [From glossary to lexicon / knowledge graph](#14-from-glossary-to-lexicon--knowledge-graph)
-15. [Language equity — a responsible-AI screen](#15-language-equity--a-responsible-ai-screen)
-16. [Building an NLU intent + slot dataset](#16-building-an-nlu-intent--slot-dataset)
-17. [The same metrics in SQL](#17-the-same-metrics-in-sql)
+7. [Auditing a corpus as data](#7-auditing-a-corpus-as-data)
+8. [Glossary adherence — closing the feedback loop](#8-glossary-adherence--closing-the-feedback-loop)
+9. [A/B-testing a matcher change](#9-ab-testing-a-matcher-change)
+10. [From glossary to lexicon / knowledge graph](#10-from-glossary-to-lexicon--knowledge-graph)
+11. [Language equity — a responsible-AI screen](#11-language-equity--a-responsible-ai-screen)
+12. [Building an NLU intent + slot dataset](#12-building-an-nlu-intent--slot-dataset)
+13. [The same metrics in SQL](#13-the-same-metrics-in-sql)
+
+**Appendix**
+
+14. [Pre-work checklist](#14-pre-work-checklist)
+15. [Snippet index](#15-snippet-index)
+16. [Debugging commands](#16-debugging-commands)
+17. [References](#17-references)
 
 ---
 
@@ -490,16 +493,178 @@ disproportionately.
 
 ---
 
-## 7. Pre-work checklist
+# Part II — dataset engineering for ML
 
-### 7.1 Before ingesting multilingual text
+Part I is about *parsing bugs* — one defect, one fix. A Linguistic Engineer
+on a voice-assistant team spends most of the day a layer up: turning messy
+multilingual inputs into **datasets, metrics, and feedback loops** that ML
+systems consume. Part II is that layer, built on the exact same primitives
+(encoding discipline #1, lang-code aliases #2, script-aware matching #4).
+
+Every tool here is **stdlib-only**, prints a Markdown report by default
+(`--format json` for machines), exits non-zero on findings (so it works as
+a CI gate), and ships a sample with planted defects plus a pytest that
+proves the defects are caught. Run the suite from `snippets/`:
+
+```bash
+python -m pytest tests/ -q      # 16 tests
+```
+
+## 7. Auditing a corpus as data
+
+Part I finds defects one at a time; production never delivers them that way.
+A single vendor CSV arrives as cp949 bytes, with mixed `ko`/`ko-KR` headers,
+half the Japanese column empty, and three rows where `{player_name}` got
+"translated". [`audit_corpus.py`](./snippets/dataset-quality/audit_corpus.py)
+makes **one pass** and reports all of it with row-level pointers, so the data
+owner fixes the source instead of you patching symptoms downstream.
+
+It computes, over a wide-format corpus (one column per language):
+
+| Check | Ties back to |
+|-------|--------------|
+| encoding used (utf-8 vs cp949), mojibake cells, U+FFFD | #1 |
+| not-NFC cells (jamo-split Hangul) | #1.4 |
+| mixed lang-code forms (`ko` vs `ko-KR`) | #2 |
+| per-language coverage / missing translations | #4 |
+| duplicate keys & source values | — |
+| placeholder parity (`{0}`, `%s`, `<br>`) across languages | — |
+| length-ratio outliers vs the base column | — |
+
+```bash
+python audit_corpus.py sample_corpus.csv          # markdown report, exit 1 if dirty
+python audit_corpus.py corpus.csv --format json --out report
+```
+
+The auditor practices what the book preaches: it reads with `utf-8-sig`
+then falls back to cp949 (#1.5), and reuses the `lang_aliases` rule (#2).
+
+## 8. Glossary adherence — closing the feedback loop
+
+Shipping a glossary is an *input*. The question product actually cares about
+is the *outcome*: did the model use it?
+[`glossary_adherence.py`](./snippets/glossary-eval/glossary_adherence.py)
+takes the source text, the MT output, and the glossary, and for every
+segment × language checks whether a glossary term present in the source
+produced its mandated translation in the output.
+
+```
+| language | applicable | applied | adherence |
+| ja       | 7          | 4       | 57.1% ⚠️  |   ← actionable: top misses listed
+| zh-CN    | 7          | 6       | 85.7%     |
+| ko       | 7          | 7       | 100.0%    |
+```
+
+It is the evaluation twin of #4: #4 finds terms to *inject*; this measures
+whether the injected term *survived*. Matching is script-aware — `\b` for
+Latin, substring for CJK (#4.2). It does **not** judge fluency; that's a
+separate LLM-as-judge tool, deliberately out of scope.
+
+## 9. A/B-testing a matcher change
+
+README #4 lists matching strategies in prose, where bad decisions hide.
+Before swapping the production matcher you owe product a number.
+[`strategy_ab.py`](./snippets/experiments/strategy_ab.py) runs each strategy
+over a **labeled gold set** and reports precision / recall / F1:
+
+```
+| strategy            | precision | recall | F1     | FP | FN |
+| word_boundary 🏆    | 100.0%    | 100.0% | 100.0% | 0  | 0  |
+| word_boundary+min3  | 100.0%    | 71.4%  | 83.3%  | 0  | 2  |
+| substring           | 63.6%     | 100.0% | 77.8%  | 4  | 0  |
+```
+
+The trade-off is now visible: substring over-fires (`AI` inside `Said`); the
+min-length guard kills 2-char terms (`AI`, `OK`). This is the "design and
+conduct product experiments" muscle: fixed control set, candidate variants,
+one metric, one winner.
+
+## 10. From glossary to lexicon / knowledge graph
+
+A flat glossary answers "how do I say X in Japanese" and nothing else. The
+moment you need "which terms are in the COMBAT domain" or "given 戦利品, what
+concept is that and all its labels", you need a graph.
+[`build_lexicon.py`](./snippets/knowledge-graph/build_lexicon.py) lifts the
+flat CSV into a concept graph with SKOS/lexinfo-style triples:
+
+```
+concept:loot skos:prefLabel "loot"@en .
+concept:loot skos:prefLabel "戦利品"@ja .
+concept:loot dct:subject domain:Combat .
+concept:loot skos:broader concept:item .
+```
+
+…plus a reverse index: any surface form in any language → its concept →
+every other label. That cross-lingual lookup is exactly what a lexicon-backed
+NLU layer or glossary augmenter consumes.
+
+```bash
+python build_lexicon.py glossary_lex.csv --lookup 戦利品   # -> concept 'loot' + all labels
+python build_lexicon.py glossary_lex.csv --format triples --out lexicon
+```
+
+## 11. Language equity — a responsible-AI screen
+
+Aggregate quality numbers hide disparity: "92% coverage" can mean every
+language is at 92%, or English at 100% and five languages at 70%.
+[`coverage_bias.py`](./snippets/responsible-ai/coverage_bias.py) disaggregates
+by language and flags inequity with label-free proxies — coverage,
+copy-through (target == source), and too-short stubs — then reports the
+spread (gap from best, coefficient of variation):
+
+```
+- coverage gap (best − worst): 50.0% ⚠️
+## ⚠️ Underserved languages (>10pp below best)
+- `th` — coverage 50.0%; prioritize for data collection
+```
+
+The sample spans RTL (Arabic, Hebrew) and Indic (Hindi) columns. The tool
+also **caveats its own metric**: char-length comparison over-flags dense
+scripts (CJK), so `too-short` is a within-script screen, not a verdict —
+metric self-awareness is part of responsible-AI review.
+
+## 12. Building an NLU intent + slot dataset
+
+The voice-assistant NLU model needs labeled utterances: each tagged with an
+intent and slot spans. Hand-writing thousands per language guarantees
+inconsistent offsets and lopsided class balance.
+[`build_intent_dataset.py`](./snippets/nlu/build_intent_dataset.py) expands
+templates × slot values combinatorially and **computes the character spans
+automatically**, so labels are always exact — including CJK:
+
+```jsonl
+{"lang":"en","intent":"buy_item","text":"buy two sword",
+ "slots":[{"name":"count","value":"two","start":4,"end":7},
+          {"name":"item","value":"sword","start":8,"end":13}]}
+```
+
+It also reports class balance and warns on thin `(lang, intent)` cells, the
+ASR/NLU-facing complement to the rest of the book.
+
+## 13. The same metrics in SQL
+
+When the data already landed in Postgres, you don't export — you query.
+[`quality_metrics.sql`](./snippets/sql/quality_metrics.sql) expresses the
+Part II metrics against the #6 evaluation schema: glossary adherence by
+language, per-language coverage with gap-from-best (window functions),
+lang-code form drift (#2), a mojibake screen (#1), copy-through detection,
+and augmenter health from the JSONB `augmenter_log`. Prisma's camelCase
+columns are double-quoted throughout (#6.2).
+
+---
+
+# Appendix
+
+## 14. Pre-work checklist
+
+### 14.1 Before ingesting multilingual text
 
 - [ ] Where is the decode step (browser? server? both)?
 - [ ] What's the assumed encoding? Are non-UTF-8 inputs possible?
 - [ ] BOM handling?
 - [ ] NFC/NFD normalization required? (macOS filenames, Hangul jamo)
 
-### 7.2 When handling lang codes
+### 14.2 When handling lang codes
 
 - [ ] Do base (`ko`) and locale (`ko-KR`) forms appear in the same
       code path?
@@ -507,7 +672,7 @@ disproportionately.
 - [ ] Do you need to preserve region (`zh-CN` vs `zh-TW`)?
 - [ ] Casing? Hyphen vs underscore?
 
-### 7.3 When writing a term matcher
+### 14.3 When writing a term matcher
 
 - [ ] CJK vs Latin word-boundary semantics?
 - [ ] `min_len` guard against single-character noise?
@@ -516,7 +681,7 @@ disproportionately.
 - [ ] Performance: at terms × segments > 1M, reconsider data
       structure.
 
-### 7.4 When implementing upload/download
+### 14.4 When implementing upload/download
 
 - [ ] Upload: read raw bytes and detect encoding (NEVER `File.text()`
       on user-controlled CSV).
@@ -525,7 +690,7 @@ disproportionately.
 - [ ] BOM the export if Excel is the likely consumer.
 - [ ] Match Content-Type on presigned PUT requests.
 
-### 7.5 When crossing two DB boundaries
+### 14.5 When crossing two DB boundaries
 
 - [ ] Is migration ownership explicit?
 - [ ] When does cached state become stale?
@@ -533,14 +698,14 @@ disproportionately.
 - [ ] If a transaction straddles both stacks, how is partial failure
       handled?
 
-### 7.6 When storing evaluation / debug data
+### 14.6 When storing evaluation / debug data
 
 - [ ] Does this benefit from normalization (indexing, analytics)?
 - [ ] How big is the per-row payload? (KB per row → reconsider)
 - [ ] What's the retention policy?
 - [ ] Any PII?
 
-### 7.7 When resolving per-locale content files
+### 14.7 When resolving per-locale content files
 
 - [ ] Are locale variants (`*.en.mdx`) excluded from the base listing?
 - [ ] Does a missing variant fall back to the base file?
@@ -551,7 +716,7 @@ disproportionately.
 
 ---
 
-## 8. Snippet index
+## 15. Snippet index
 
 Every pattern above has a runnable equivalent in
 [`snippets/`](./snippets/). Pick a single file and drop it into another
@@ -574,7 +739,7 @@ project — they're self-contained.
 
 ---
 
-## 9. Debugging commands
+## 16. Debugging commands
 
 ### Suspect a file encoding
 
@@ -630,169 +795,7 @@ encoding. CLI version: [`snippets/debug/mojibake_trace.py`](./snippets/debug/moj
 
 ---
 
----
-
-# Part II — dataset engineering for ML
-
-Part I is about *parsing bugs* — one defect, one fix. A Linguistic Engineer
-on a voice-assistant team spends most of the day a layer up: turning messy
-multilingual inputs into **datasets, metrics, and feedback loops** that ML
-systems consume. Part II is that layer, built on the exact same primitives
-(encoding discipline #1, lang-code aliases #2, script-aware matching #4).
-
-Every tool here is **stdlib-only**, prints a Markdown report by default
-(`--format json` for machines), exits non-zero on findings (so it works as
-a CI gate), and ships a sample with planted defects plus a pytest that
-proves the defects are caught. Run the suite from `snippets/`:
-
-```bash
-python -m pytest tests/ -q      # 16 tests
-```
-
-## 11. Auditing a corpus as data
-
-Part I finds defects one at a time; production never delivers them that way.
-A single vendor CSV arrives as cp949 bytes, with mixed `ko`/`ko-KR` headers,
-half the Japanese column empty, and three rows where `{player_name}` got
-"translated". [`audit_corpus.py`](./snippets/dataset-quality/audit_corpus.py)
-makes **one pass** and reports all of it with row-level pointers, so the data
-owner fixes the source instead of you patching symptoms downstream.
-
-It computes, over a wide-format corpus (one column per language):
-
-| Check | Ties back to |
-|-------|--------------|
-| encoding used (utf-8 vs cp949), mojibake cells, U+FFFD | #1 |
-| not-NFC cells (jamo-split Hangul) | #1.4 |
-| mixed lang-code forms (`ko` vs `ko-KR`) | #2 |
-| per-language coverage / missing translations | #4 |
-| duplicate keys & source values | — |
-| placeholder parity (`{0}`, `%s`, `<br>`) across languages | — |
-| length-ratio outliers vs the base column | — |
-
-```bash
-python audit_corpus.py sample_corpus.csv          # markdown report, exit 1 if dirty
-python audit_corpus.py corpus.csv --format json --out report
-```
-
-The auditor practices what the book preaches: it reads with `utf-8-sig`
-then falls back to cp949 (#1.5), and reuses the `lang_aliases` rule (#2).
-
-## 12. Glossary adherence — closing the feedback loop
-
-Shipping a glossary is an *input*. The question product actually cares about
-is the *outcome*: did the model use it?
-[`glossary_adherence.py`](./snippets/glossary-eval/glossary_adherence.py)
-takes the source text, the MT output, and the glossary, and for every
-segment × language checks whether a glossary term present in the source
-produced its mandated translation in the output.
-
-```
-| language | applicable | applied | adherence |
-| ja       | 7          | 4       | 57.1% ⚠️  |   ← actionable: top misses listed
-| zh-CN    | 7          | 6       | 85.7%     |
-| ko       | 7          | 7       | 100.0%    |
-```
-
-It is the evaluation twin of #4: #4 finds terms to *inject*; this measures
-whether the injected term *survived*. Matching is script-aware — `\b` for
-Latin, substring for CJK (#4.2). It does **not** judge fluency; that's a
-separate LLM-as-judge tool, deliberately out of scope.
-
-## 13. A/B-testing a matcher change
-
-README #4 lists matching strategies in prose, where bad decisions hide.
-Before swapping the production matcher you owe product a number.
-[`strategy_ab.py`](./snippets/experiments/strategy_ab.py) runs each strategy
-over a **labeled gold set** and reports precision / recall / F1:
-
-```
-| strategy            | precision | recall | F1     | FP | FN |
-| word_boundary 🏆    | 100.0%    | 100.0% | 100.0% | 0  | 0  |
-| word_boundary+min3  | 100.0%    | 71.4%  | 83.3%  | 0  | 2  |
-| substring           | 63.6%     | 100.0% | 77.8%  | 4  | 0  |
-```
-
-The trade-off is now visible: substring over-fires (`AI` inside `Said`); the
-min-length guard kills 2-char terms (`AI`, `OK`). This is the "design and
-conduct product experiments" muscle: fixed control set, candidate variants,
-one metric, one winner.
-
-## 14. From glossary to lexicon / knowledge graph
-
-A flat glossary answers "how do I say X in Japanese" and nothing else. The
-moment you need "which terms are in the COMBAT domain" or "given 戦利品, what
-concept is that and all its labels", you need a graph.
-[`build_lexicon.py`](./snippets/knowledge-graph/build_lexicon.py) lifts the
-flat CSV into a concept graph with SKOS/lexinfo-style triples:
-
-```
-concept:loot skos:prefLabel "loot"@en .
-concept:loot skos:prefLabel "戦利品"@ja .
-concept:loot dct:subject domain:Combat .
-concept:loot skos:broader concept:item .
-```
-
-…plus a reverse index: any surface form in any language → its concept →
-every other label. That cross-lingual lookup is exactly what a lexicon-backed
-NLU layer or glossary augmenter consumes.
-
-```bash
-python build_lexicon.py glossary_lex.csv --lookup 戦利品   # -> concept 'loot' + all labels
-python build_lexicon.py glossary_lex.csv --format triples --out lexicon
-```
-
-## 15. Language equity — a responsible-AI screen
-
-Aggregate quality numbers hide disparity: "92% coverage" can mean every
-language is at 92%, or English at 100% and five languages at 70%.
-[`coverage_bias.py`](./snippets/responsible-ai/coverage_bias.py) disaggregates
-by language and flags inequity with label-free proxies — coverage,
-copy-through (target == source), and too-short stubs — then reports the
-spread (gap from best, coefficient of variation):
-
-```
-- coverage gap (best − worst): 50.0% ⚠️
-## ⚠️ Underserved languages (>10pp below best)
-- `th` — coverage 50.0%; prioritize for data collection
-```
-
-The sample spans RTL (Arabic, Hebrew) and Indic (Hindi) columns. The tool
-also **caveats its own metric**: char-length comparison over-flags dense
-scripts (CJK), so `too-short` is a within-script screen, not a verdict —
-metric self-awareness is part of responsible-AI review.
-
-## 16. Building an NLU intent + slot dataset
-
-The voice-assistant NLU model needs labeled utterances: each tagged with an
-intent and slot spans. Hand-writing thousands per language guarantees
-inconsistent offsets and lopsided class balance.
-[`build_intent_dataset.py`](./snippets/nlu/build_intent_dataset.py) expands
-templates × slot values combinatorially and **computes the character spans
-automatically**, so labels are always exact — including CJK:
-
-```jsonl
-{"lang":"en","intent":"buy_item","text":"buy two sword",
- "slots":[{"name":"count","value":"two","start":4,"end":7},
-          {"name":"item","value":"sword","start":8,"end":13}]}
-```
-
-It also reports class balance and warns on thin `(lang, intent)` cells, the
-ASR/NLU-facing complement to the rest of the book.
-
-## 17. The same metrics in SQL
-
-When the data already landed in Postgres, you don't export — you query.
-[`quality_metrics.sql`](./snippets/sql/quality_metrics.sql) expresses the
-Part II metrics against the #6 evaluation schema: glossary adherence by
-language, per-language coverage with gap-from-best (window functions),
-lang-code form drift (#2), a mojibake screen (#1), copy-through detection,
-and augmenter health from the JSONB `augmenter_log`. Prisma's camelCase
-columns are double-quoted throughout (#6.2).
-
----
-
-## 18. References
+## 17. References
 
 - [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/) —
   `TextDecoder` supported encodings.
@@ -803,6 +806,6 @@ columns are double-quoted throughout (#6.2).
 - [Unicode UAX #15](https://unicode.org/reports/tr15/) — Normalization
   Forms (NFC / NFD).
 - [SKOS](https://www.w3.org/TR/skos-reference/) — Simple Knowledge
-  Organization System (prefLabel / altLabel / broader), used in #14.
+  Organization System (prefLabel / altLabel / broader), used in #10.
 - [lemon / lexinfo](https://lemon-model.net/) — lexicon model for
-  ontologies (part-of-speech and lexical metadata), used in #14.
+  ontologies (part-of-speech and lexical metadata), used in #10.
