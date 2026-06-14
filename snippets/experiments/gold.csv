@@ -1,0 +1,14 @@
+text,term,gold
+He Said yes to the plan,AI,0
+Again we try,AI,0
+The AI Director rules,AI,1
+AI Director spawns loot,AI Director,1
+Reduce the cooldown now,cooldown,1
+a cool down period,cooldown,0
+Collect the loot bag,loot,1
+He is a looter,loot,0
+冷却を減らす,冷却,1
+戦利品を集める,戦利品,1
+普通の戦い,戦利品,0
+Press OK to continue,OK,1
+BOOKMARK it,OK,0
