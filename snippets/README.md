@@ -22,7 +22,8 @@ snippets/
 ├── glossary-matching/          # term lookup strategies
 │   ├── substring_match.py           # simplest "term in text" loop
 │   ├── word_boundary_match.py       # \b for Latin, substring for CJK
-│   └── aho_corasick_match.py        # bulk matching for large term sets
+│   ├── aho_corasick_match.py        # bulk matching for large term sets
+│   └── prefix_index.py              # trie: typeahead + longest-match segmentation
 ├── download/                   # HTTP response patterns
 │   ├── content-disposition-rfc5987.ts   # filename* for non-ASCII names
 │   └── streaming-csv-export.ts          # ReadableStream-based CSV
@@ -35,6 +36,7 @@ snippets/
 │   # ── Part II: dataset engineering for ML ────────────────────────────
 ├── dataset-quality/            # audit a corpus as data
 │   ├── audit_corpus.py              # encoding/lang-code/coverage/placeholder report
+│   ├── top_terms.py                 # bounded-heap top-K untranslated terms over a stream
 │   └── sample_corpus.csv            # demo data with planted defects
 ├── glossary-eval/              # did the model honor the glossary?
 │   ├── glossary_adherence.py        # per-language adherence + misses (feedback loop)
@@ -50,6 +52,7 @@ snippets/
 │   └── corpus_multilang.csv         # demo incl. RTL (ar/he) + Indic (hi)
 ├── nlu/                        # build NLU training data
 │   ├── build_intent_dataset.py      # templated intent+slot synthesis w/ spans
+│   ├── merge_spans.py               # sort-and-sweep span merge + conflict detection
 │   └── templates.json               # demo templates
 ├── sql/                        # the same metrics, in Postgres
 │   └── quality_metrics.sql          # adherence/coverage/drift/mojibake queries
@@ -58,19 +61,24 @@ snippets/
 ├── benchmark/                  # ch.15 scaling proofs (numbers, not adjectives)
 │   ├── bench_matching.py            # naive O(terms×seg) vs Aho-Corasick O(N)
 │   └── stream_vs_load.py            # Welford O(1) memory vs load-everything
-├── scale/                      # ch.15 out-of-core
-│   └── out_of_core.py               # coverage via stdlib / DuckDB / polars (parity)
+├── scale/                      # ch.15 out-of-core + streaming
+│   ├── out_of_core.py               # coverage via stdlib / DuckDB / polars (parity)
+│   ├── merge_shards.py              # heap k-way merge of pre-sorted shards
+│   └── reservoir_sample.py          # one-pass uniform sample from a stream
 ├── data-model/                 # ch.17 data quality -> model performance
 │   └── data_quality_impact.py       # label-noise vs accuracy (stdlib Naive Bayes)
 ├── matching-similarity/        # ch.18 beyond exact matching
-│   └── fuzzy_match.py               # char n-gram TF-IDF cosine; variant/typo recall
+│   ├── fuzzy_match.py               # char n-gram TF-IDF cosine; variant/typo recall
+│   └── edit_distance.py             # bounded Levenshtein; typo-budget term lookup
 ├── multi-source/               # ch.20 merge heterogeneous CSVs
-│   └── build_corpus.py              # encoding/lang-code normalize + conflict + provenance
+│   ├── build_corpus.py              # encoding/lang-code normalize + conflict + provenance
+│   └── cluster_duplicates.py        # union-find clustering of duplicate records
 └── tests/                      # pytest over the Part II tools
-    └── test_part2.py                # 32 tests, asserts planted defects are caught
+    └── test_part2.py                # 49 tests, asserts planted defects are caught
 ```
 
-(ch.19's transitive reasoning + entity linking extend
+(ch.19's transitive reasoning, entity linking, and broader-before-narrower
+topological ordering extend
 [`knowledge-graph/build_lexicon.py`](./knowledge-graph/build_lexicon.py).)
 
 ## How to read these
@@ -119,12 +127,20 @@ snippets/
 | Price label noise in points of model accuracy | [`data-model/data_quality_impact.py`](./data-model/data_quality_impact.py) |
 | Match term variants/typos with no model | [`matching-similarity/fuzzy_match.py`](./matching-similarity/fuzzy_match.py) |
 | Transitive ancestors / entity-link text to concepts | [`knowledge-graph/build_lexicon.py`](./knowledge-graph/build_lexicon.py) |
+| Order a concept hierarchy broader-before-narrower (topological sort) | [`knowledge-graph/build_lexicon.py`](./knowledge-graph/build_lexicon.py) `--topo` |
 | Merge messy multi-source CSVs into one corpus | [`multi-source/build_corpus.py`](./multi-source/build_corpus.py) |
+| Collapse duplicate records that link only transitively | [`multi-source/cluster_duplicates.py`](./multi-source/cluster_duplicates.py) |
+| Accept a typo only if it is within N edits of a real term | [`matching-similarity/edit_distance.py`](./matching-similarity/edit_distance.py) |
+| Autocomplete terms by prefix / segment spaceless text | [`glossary-matching/prefix_index.py`](./glossary-matching/prefix_index.py) |
+| Rank the top-K untranslated terms without sorting everything | [`dataset-quality/top_terms.py`](./dataset-quality/top_terms.py) |
+| Merge sorted corpus shards too big to hold in memory | [`scale/merge_shards.py`](./scale/merge_shards.py) |
+| Draw a uniform spot-check sample from a stream of unknown size | [`scale/reservoir_sample.py`](./scale/reservoir_sample.py) |
+| Merge overlapping annotation spans and flag label conflicts | [`nlu/merge_spans.py`](./nlu/merge_spans.py) |
 
 Run the Part II test suite from this directory:
 
 ```bash
-python -m pytest tests/ -q      # 16 tests; needs `pip install pytest`
+python -m pytest tests/ -q      # 49 tests; needs `pip install pytest`
 ```
 
 Every Part II tool is stdlib-only, prints a Markdown report by default

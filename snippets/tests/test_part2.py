@@ -397,3 +397,194 @@ def test_build_corpus_merges_and_flags_conflict(tmp_path):
     assert res["encodings"][b.name] == "cp949"
     assert len(res["conflicts"]) == 1                  # 공격 vs 어택, same (key,lang)
     assert res["value"][("attack", "ko-KR")][0] == "공격"   # first source wins
+
+
+# --------------------------------------------------------------------------
+# edit distance (matching-similarity)
+# --------------------------------------------------------------------------
+
+
+def test_levenshtein_basic_edits_and_symmetry():
+    ed = _load("matching-similarity/edit_distance.py", "edit_distance")
+    assert ed.levenshtein("cooldown", "cooldown") == 0
+    assert ed.levenshtein("cooldown", "cooldwn") == 1      # one deletion
+    assert ed.levenshtein("inventary", "inventory") == 1   # one substitution
+    assert ed.levenshtein("kitten", "sitting") == 3        # textbook case
+    assert ed.levenshtein("abc", "cba") == ed.levenshtein("cba", "abc")  # symmetric
+
+
+def test_bounded_levenshtein_matches_full_within_budget():
+    ed = _load("matching-similarity/edit_distance.py", "edit_distance")
+    for a, b in [("cooldown", "cooldwn"), ("loot", "loots"), ("abc", "xyz")]:
+        full = ed.levenshtein(a, b)
+        bounded = ed.bounded_levenshtein(a, b, 2)
+        # bounded agrees with full while the true distance is within budget,
+        # and caps out (budget+1) once it provably exceeds it
+        assert bounded == full if full <= 2 else bounded == 3
+
+
+def test_closest_recovers_typo_rejects_unrelated():
+    ed = _load("matching-similarity/edit_distance.py", "edit_distance")
+    terms = ["cooldown", "respawn", "loot"]
+    assert ed.closest("cooldwn", terms, max_dist=2)[0] == "cooldown"
+    assert ed.closest("banana", terms, max_dist=2) is None
+    assert ed.closest("ＣＯＯＬＤＯＷＮ", terms, max_dist=1)[0] == "cooldown"  # NFKC width
+
+
+# --------------------------------------------------------------------------
+# prefix index (trie)
+# --------------------------------------------------------------------------
+
+
+def test_trie_prefix_and_membership():
+    pi = _load("glossary-matching/prefix_index.py", "prefix_index")
+    t = pi.Trie()
+    for term in ["cool", "cooldown", "coop", "respawn"]:
+        t.insert(term)
+    assert t.keys_with_prefix("coo") == ["cool", "cooldown", "coop"]
+    assert "cooldown" in t and "cooldo" not in t
+    assert t.keys_with_prefix("zz") == []
+
+
+def test_trie_longest_match_segmentation():
+    pi = _load("glossary-matching/prefix_index.py", "prefix_index")
+    t = pi.Trie()
+    for term in ["アイテム", "アイテム化", "戦利品"]:
+        t.insert(term)
+    # longest match wins: アイテム化, not アイテム
+    assert t.longest_prefix_of("アイテム化する") == "アイテム化"
+    assert t.segment("戦利品をアイテム化") == ["戦利品", "を", "アイテム化"]
+
+
+# --------------------------------------------------------------------------
+# duplicate clustering (union-find)
+# --------------------------------------------------------------------------
+
+
+def test_union_find_transitive_clustering():
+    cd = _load("multi-source/cluster_duplicates.py", "cluster_duplicates")
+    clusters = cd.cluster(cd.DEMO_RECORDS, "id", ["name", "ext_id"])
+    sizes = sorted(len(c) for c in clusters)
+    assert sizes == [1, 1, 4]               # r1..r4 merge transitively
+    big = max(clusters, key=len)
+    assert {r["id"] for r in big} == {"r1", "r2", "r3", "r4"}
+
+
+def test_disjoint_set_path_compression_and_rank():
+    cd = _load("multi-source/cluster_duplicates.py", "cluster_duplicates")
+    dsu = cd.DisjointSet()
+    for x in "abcd":
+        dsu.add(x)
+    dsu.union("a", "b")
+    dsu.union("c", "d")
+    dsu.union("b", "c")                      # joins the two pairs
+    assert len({dsu.find(x) for x in "abcd"}) == 1
+
+
+# --------------------------------------------------------------------------
+# top-K terms (bounded heap)
+# --------------------------------------------------------------------------
+
+
+def test_top_k_matches_full_sort():
+    tt = _load("dataset-quality/top_terms.py", "top_terms")
+    counts = {"a": 5, "b": 3, "c": 9, "d": 1, "e": 7}
+    for k in (1, 3, 5):
+        assert tt.top_k(counts, k) == tt.top_k_sorted(counts, k)
+    assert tt.top_k(counts, 2) == [("c", 9), ("e", 7)]
+
+
+def test_stream_untranslated_counts_blank_and_copy_through():
+    tt = _load("dataset-quality/top_terms.py", "top_terms")
+    counts = tt.count_untranslated(tt.DEMO_ROWS, "en", ["ko", "ja"])
+    assert counts["Cooldown"] == 3          # 2 blanks + 1 ja-blank
+    assert "Loot" not in counts             # fully translated, never counted
+    assert counts["Inventory"] == 2         # copy-through + blank both count
+
+
+# --------------------------------------------------------------------------
+# k-way merge of sorted shards (heap)
+# --------------------------------------------------------------------------
+
+
+def test_kway_merge_equals_full_sort():
+    ms = _load("scale/merge_shards.py", "merge_shards")
+    shards = ms.make_shards(5, 50)
+    merged = list(ms.kway_merge(shards))
+    assert merged == sorted(v for s in shards for v in s)
+
+
+def test_kway_merge_handles_empty_and_uneven_shards():
+    ms = _load("scale/merge_shards.py", "merge_shards")
+    shards = [[1, 4, 7], [], [2, 2, 9], [0]]
+    assert list(ms.kway_merge(shards)) == [0, 1, 2, 2, 4, 7, 9]
+
+
+# --------------------------------------------------------------------------
+# topological order of the concept hierarchy (Kahn)
+# --------------------------------------------------------------------------
+
+
+def test_topo_order_places_broader_before_narrower():
+    rows = [
+        {"id": "object", "en": "object", "broader": "", "synonyms": ""},
+        {"id": "item", "en": "item", "broader": "object", "synonyms": ""},
+        {"id": "loot", "en": "loot", "broader": "item", "synonyms": ""},
+    ]
+    g, _ = lex.build(rows)
+    order = g.topo_order()
+    assert order.index("object") < order.index("item") < order.index("loot")
+
+
+def test_topo_order_total_even_with_cycle():
+    rows = [
+        {"id": "a", "en": "a", "broader": "b", "synonyms": ""},
+        {"id": "b", "en": "b", "broader": "a", "synonyms": ""},
+    ]
+    g, _ = lex.build(rows)
+    assert sorted(g.topo_order()) == ["a", "b"]    # still a total order
+
+
+# --------------------------------------------------------------------------
+# annotation span merge + conflict (sort-and-sweep)
+# --------------------------------------------------------------------------
+
+
+def test_merge_spans_joins_same_label_overlaps():
+    sp = _load("nlu/merge_spans.py", "merge_spans")
+    spans = [sp.Span(8, 10, "ORG"), sp.Span(8, 19, "ORG"), sp.Span(20, 24, "ITEM")]
+    merged = sp.merge_spans(spans)
+    assert sp.Span(8, 19, "ORG") in merged and sp.Span(20, 24, "ITEM") in merged
+    assert len(merged) == 2
+
+
+def test_merge_spans_reports_cross_label_conflict():
+    sp = _load("nlu/merge_spans.py", "merge_spans")
+    conflicts = sp.find_conflicts(sp.DEMO_SPANS)
+    assert len(conflicts) == 1
+    labels = {conflicts[0][0].label, conflicts[0][1].label}
+    assert labels == {"ORG", "TITLE"}
+
+
+# --------------------------------------------------------------------------
+# reservoir sampling (uniform, single pass)
+# --------------------------------------------------------------------------
+
+
+def test_reservoir_sample_size_and_membership():
+    import random
+    rs = _load("scale/reservoir_sample.py", "reservoir_sample")
+    sample = rs.reservoir_sample(range(100), 10, random.Random(0))
+    assert len(sample) == 10
+    assert len(set(sample)) == 10                 # no duplicates
+    assert all(0 <= x < 100 for x in sample)
+    assert rs.reservoir_sample(range(3), 10, random.Random(0)) == [0, 1, 2]  # k>n
+
+
+def test_reservoir_sample_is_approximately_uniform():
+    rs = _load("scale/reservoir_sample.py", "reservoir_sample")
+    n, k = 20, 5
+    rates = rs.inclusion_rates(n, k, trials=4000, seed=1)
+    expected = k / n
+    # every element should land within a few points of k/n over many trials
+    assert max(abs(r - expected) for r in rates) < 0.06

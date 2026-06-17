@@ -381,6 +381,13 @@ exist anyway). **Cons:** in English, `"AI"` matches inside `"Said"` and
   [`word_boundary_match.py`](./snippets/glossary-matching/word_boundary_match.py),
   [`aho_corasick_match.py`](./snippets/glossary-matching/aho_corasick_match.py).
 
+Two jobs are awkward with a flat term list and natural with a **trie**:
+typeahead (every term starting with `cool`) and longest-match segmentation of
+spaceless scripts (find the longest dictionary term at each position).
+[`prefix_index.py`](./snippets/glossary-matching/prefix_index.py) is that trie —
+the same structure Aho-Corasick is built on, minus the failure links, so it reads
+as the gentler introduction.
+
 ### 4.3 Real bug: `case_sensitive` option silently dropped
 
 `GlossaryAugmenter.config_schema` declares a `case_sensitive` option,
@@ -514,7 +521,7 @@ a CI gate), and ships a sample with planted defects plus a pytest that
 proves the defects are caught. Run the suite from `snippets/`:
 
 ```bash
-python -m pytest tests/ -q      # 16 tests
+python -m pytest tests/ -q      # 49 tests
 ```
 
 ## 7. Auditing a corpus as data
@@ -712,6 +719,14 @@ automatically**, so labels are always exact — including CJK:
 It also reports class balance and warns on thin `(lang, intent)` cells, the
 ASR/NLU-facing complement to the rest of the book.
 
+Once spans arrive from several annotators or a rule-tagger plus a model, they
+overlap, and two kinds of overlap mean opposite things: same-label overlaps are
+one mention split in two (merge them), different-label overlaps are a genuine
+disagreement (surface them, never merge).
+[`merge_spans.py`](./snippets/nlu/merge_spans.py) settles both with one
+sort-and-sweep over the spans (O(n log n), not all-pairs) — the same interval
+pattern used for calendars and genome ranges, here cleaning annotation data.
+
 ## 14. The same metrics in SQL
 
 When the data already landed in Postgres, you don't export — you query.
@@ -790,6 +805,22 @@ duckdb.execute('''
 same coverage three ways — stdlib stream, DuckDB, polars lazy — and asserts they
 agree. DuckDB/polars are optional heavy dependencies (like `pyahocorasick` in
 #4); the stdlib path always runs.
+
+### Three streaming primitives worth owning
+
+Once the data won't fit in memory, a few classic algorithms keep coming up; each
+holds bounded memory regardless of stream size, and each is one short file:
+
+- **Top-K with a bounded heap** — "which terms are most often left
+  untranslated?" without sorting the whole corpus. A size-K min-heap is O(K)
+  memory, O(N log K) time:
+  [`scale`-adjacent `dataset-quality/top_terms.py`](./snippets/dataset-quality/top_terms.py).
+- **K-way merge of sorted shards** — the merge half of an external sort: combine
+  shards you can't concatenate in RAM, via a heap with one slot per shard
+  ([`scale/merge_shards.py`](./snippets/scale/merge_shards.py)).
+- **Reservoir sampling** — a uniform spot-check sample in one pass, without
+  knowing the stream length up front
+  ([`scale/reservoir_sample.py`](./snippets/scale/reservoir_sample.py)).
 
 ### Decision rule
 
@@ -909,6 +940,13 @@ scripts this book deals with — at the cost of capturing *surface* similarity, 
 not link them; that is where real embeddings earn their weight. Know which problem
 you have. This is the on-ramp from rules (#4) to learned representations.
 
+When you want a *hard* answer rather than a similarity score — "accept this
+candidate only if it is within one edit of a real term" —
+[`edit_distance.py`](./snippets/matching-similarity/edit_distance.py) computes
+Levenshtein distance with the classic two-row DP, plus a *bounded* variant that
+bails as soon as the distance provably exceeds the budget (so screening a big
+term list stays cheap). Cosine ranks; edit distance gates.
+
 ## 19. Reasoning over the lexicon
 
 Chapter 11 built a concept graph but only read the direct `broader` edge. The
@@ -934,6 +972,10 @@ $ build_lexicon.py glossary_lex.csv --link "collect the loot then check cooldown
 - `link()` is **entity linking**: it scans free text for glossary surface forms
   (word boundary for Latin #4, substring for CJK) and resolves each to its
   concept, longest surface first so "AI Director" beats "AI"
+- `topo_order()` (`--topo`) returns the concepts broader-before-narrower via a
+  topological sort (Kahn's algorithm) — the order you need to propagate a domain
+  *down* the hierarchy or validate that a child never contradicts its parent;
+  it degrades to a total order even when `find_cycles()` finds a loop
 
 Transitive reasoning plus entity linking turn the flat lexicon of #11 into
 something you can actually query and connect to running text.
@@ -962,6 +1004,14 @@ source wins, the loser is reported, never silently dropped) and **provenance**
 (which source each value came from). Base `ko` and locale `ko-KR` stay distinct
 columns by default — collapsing them loses region (#2's `zh-CN` vs `zh-TW`
 trade-off); `--merge-base` folds them when you accept that.
+
+`build_corpus.py` keys rows by an *exact* id. When the same entity appears under
+cosmetic variants (`Cooldown`, `cool-down`, `Cooldown `) and is tied together only
+indirectly (two records share an external id, not a name),
+[`cluster_duplicates.py`](./snippets/multi-source/cluster_duplicates.py) groups
+them with **union-find**: every shared signal unions two records, and the
+connected components that remain are your deduplicated entities — capturing the
+transitive `A~B~C` case that exact-match dedup splits into fragments.
 
 ---
 
@@ -1054,8 +1104,16 @@ project — they're self-contained.
 | Reproduce the bugs hit building this book | [`debug/error_cases.py`](./snippets/debug/error_cases.py) |
 | Price label noise in points of model accuracy | [`data-model/data_quality_impact.py`](./snippets/data-model/data_quality_impact.py) |
 | Match term variants/typos with no model | [`matching-similarity/fuzzy_match.py`](./snippets/matching-similarity/fuzzy_match.py) |
+| Accept a typo only within N edits of a real term | [`matching-similarity/edit_distance.py`](./snippets/matching-similarity/edit_distance.py) |
+| Autocomplete terms by prefix / segment spaceless text | [`glossary-matching/prefix_index.py`](./snippets/glossary-matching/prefix_index.py) |
+| Rank top-K untranslated terms without sorting everything | [`dataset-quality/top_terms.py`](./snippets/dataset-quality/top_terms.py) |
+| Merge sorted corpus shards too big for RAM | [`scale/merge_shards.py`](./snippets/scale/merge_shards.py) |
+| Uniform spot-check sample from a stream of unknown size | [`scale/reservoir_sample.py`](./snippets/scale/reservoir_sample.py) |
+| Merge overlapping annotation spans / flag label conflicts | [`nlu/merge_spans.py`](./snippets/nlu/merge_spans.py) |
 | Transitive ancestors / entity-link free text to concepts | [`knowledge-graph/build_lexicon.py`](./snippets/knowledge-graph/build_lexicon.py) |
+| Order a concept hierarchy broader-before-narrower | [`knowledge-graph/build_lexicon.py`](./snippets/knowledge-graph/build_lexicon.py) `--topo` |
 | Merge messy multi-source CSVs (encoding/lang-code/conflicts) | [`multi-source/build_corpus.py`](./snippets/multi-source/build_corpus.py) |
+| Collapse duplicate records that link only transitively | [`multi-source/cluster_duplicates.py`](./snippets/multi-source/cluster_duplicates.py) |
 
 ### Field notes — bugs hit building this book
 

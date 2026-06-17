@@ -160,6 +160,38 @@ class Graph:
                 uniq.append(c)
         return uniq
 
+    def topo_order(self) -> list[str]:
+        """Concepts ordered broader-before-narrower (a topological sort), via
+        Kahn's algorithm. Anything you compute by inheriting down the hierarchy —
+        propagating a domain to all narrower concepts, validating that a child
+        never contradicts its parent — needs the parents processed first. The
+        edge is broader -> concept (object -> item -> loot).
+
+        Kahn: start from in-degree-0 nodes (no broader, or broader outside the
+        graph), repeatedly emit one and decrement its children's in-degree. If any
+        node never reaches in-degree 0, the remainder sits in a cycle and is
+        appended last so the result is still a total order (find_cycles() reports
+        the offenders separately). Ties broken by id for determinism."""
+        children: dict[str, list[str]] = {cid: [] for cid in self.concepts}
+        indeg: dict[str, int] = {cid: 0 for cid in self.concepts}
+        for c in self.concepts.values():
+            if c.broader and c.broader in self.concepts:
+                children[c.broader].append(c.id)
+                indeg[c.id] += 1
+        ready = sorted(cid for cid, d in indeg.items() if d == 0)
+        order: list[str] = []
+        while ready:
+            node = ready.pop(0)
+            order.append(node)
+            for kid in children[node]:
+                indeg[kid] -= 1
+                if indeg[kid] == 0:
+                    ready.append(kid)
+            ready.sort()   # keep the frontier ordered so the output is stable
+        if len(order) < len(self.concepts):
+            order.extend(sorted(set(self.concepts) - set(order)))  # cycle remnant
+        return order
+
     def link(self, text: str) -> list[tuple[str, str]]:
         """Entity linking: find glossary surface forms in free text and resolve
         them to concepts. Returns (concept_id, matched_surface) pairs. Latin
@@ -319,6 +351,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--lookup", help="resolve a surface form (any language) to its concept")
     p.add_argument("--ancestors", help="print the transitive broader chain of a concept id")
     p.add_argument("--descendants", help="print everything transitively narrower than a concept id")
+    p.add_argument("--topo", action="store_true",
+                   help="print concepts in broader-before-narrower (topological) order")
     p.add_argument("--link", help="entity-link: find glossary concepts mentioned in free text")
     p.add_argument("--format", choices=["stats", "json", "triples"], default="stats")
     p.add_argument("--out", help="output path stem (extension added per format)")
@@ -351,6 +385,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.descendants:
         kids = g.descendants(args.descendants)
         print(f"narrower than {args.descendants}: {', '.join(kids) or '(none)'}")
+        return 0
+
+    if args.topo:
+        print(" -> ".join(g.topo_order()))
         return 0
 
     if args.link:
