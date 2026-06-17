@@ -588,3 +588,127 @@ def test_reservoir_sample_is_approximately_uniform():
     expected = k / n
     # every element should land within a few points of k/n over many trials
     assert max(abs(r - expected) for r in rates) < 0.06
+
+
+# --------------------------------------------------------------------------
+# concept_paths: BFS / DFS / Dijkstra
+# --------------------------------------------------------------------------
+
+
+def test_bfs_fewest_hops_vs_dijkstra_least_cost():
+    cp = _load("knowledge-graph/concept_paths.py", "concept_paths")
+    adj = cp.make_undirected(cp.DEMO_EDGES)
+    hop = cp.bfs_path(adj, "sword", "gold")
+    dist, parent = cp.dijkstra(adj, "sword")
+    cheap = cp.path_from(parent, "gold")
+    # BFS takes the direct (4-hop) route; Dijkstra takes the cheaper 5-hop route
+    assert len(hop) - 1 == 4
+    assert dist["gold"] == 6.0
+    assert len(cheap) - 1 == 5 and "currency" in cheap
+
+
+def test_bfs_returns_none_when_unreachable():
+    cp = _load("knowledge-graph/concept_paths.py", "concept_paths")
+    adj = cp.make_undirected([("a", "b", 1.0), ("c", "d", 1.0)])
+    assert cp.bfs_path(adj, "a", "d") is None
+    assert cp.dfs_reachable(adj, "a") == {"a", "b"}
+
+
+# --------------------------------------------------------------------------
+# threshold_search: binary search + parametric
+# --------------------------------------------------------------------------
+
+
+def test_lower_and_upper_bound_match_bisect():
+    import bisect
+    ts = _load("experiments/threshold_search.py", "threshold_search")
+    xs = [0.1, 0.3, 0.3, 0.5, 0.9]
+    for target in (0.0, 0.3, 0.4, 0.9, 1.0):
+        assert ts.lower_bound(xs, target) == bisect.bisect_left(xs, target)
+        assert ts.upper_bound(xs, target) == bisect.bisect_right(xs, target)
+
+
+def test_parametric_threshold_respects_budget():
+    ts = _load("experiments/threshold_search.py", "threshold_search")
+    scores = ts.DEMO_SCORES
+    cands = sorted(set(scores))
+    t = ts.search_threshold(cands, lambda x: ts.matches_at(scores, x) <= 3)
+    assert ts.matches_at(scores, t) <= 3
+    # the next-lower candidate must break the budget (smallest feasible threshold)
+    lower = cands[cands.index(t) - 1]
+    assert ts.matches_at(scores, lower) > 3
+
+
+# --------------------------------------------------------------------------
+# windowed_metrics: sliding window + two pointers
+# --------------------------------------------------------------------------
+
+
+def test_sliding_window_mean_matches_brute_force():
+    wm = _load("scale/windowed_metrics.py", "windowed_metrics")
+    vals = [1.0, 2.0, 3.0, 4.0, 5.0]
+    got = list(wm.sliding_window_mean(vals, 3))
+    assert got == [(2, 2.0), (3, 3.0), (4, 4.0)]
+
+
+def test_longest_ok_run_two_pointer():
+    wm = _load("scale/windowed_metrics.py", "windowed_metrics")
+    flags = [0, 0, 1, 0, 1, 1, 0, 0, 0]
+    length, start, end = wm.longest_ok_run(flags, max_bad=1)
+    assert length == 4 and flags[start:end].count(1) <= 1   # e.g. [1,0,0,0] tail
+    assert wm.longest_ok_run([1, 1, 1], max_bad=0)[0] == 0
+
+
+# --------------------------------------------------------------------------
+# constraint_expand: backtracking with pruning
+# --------------------------------------------------------------------------
+
+
+def test_backtracking_generates_only_valid_and_prunes():
+    ce = _load("nlu/constraint_expand.py", "constraint_expand")
+    combos = ce.expand(ce.DEMO_SLOTS, ce.all_distinct)
+    assert len(combos) == 12                               # 3 * 2 * 2 after pruning
+    assert all(c["give"] != c["receive"] for c in combos)
+    valid, visited, product = ce.count_nodes(ce.DEMO_SLOTS, ce.all_distinct)
+    assert valid == 12 and product == 18                   # pruned below the product
+
+
+# --------------------------------------------------------------------------
+# sequence_align: LCS + LIS
+# --------------------------------------------------------------------------
+
+
+def test_lcs_finds_unchanged_spine():
+    sa = _load("matching-similarity/sequence_align.py", "sequence_align")
+    a = ["the", "ancient", "loot", "chest", "respawns"]
+    b = ["the", "rare", "loot", "chest", "now", "respawns"]
+    assert sa.lcs(a, b) == ["the", "loot", "chest", "respawns"]
+    assert sa.lcs_length(a, b) == 4
+    assert sa.lcs(list("abc"), list("xyz")) == []
+
+
+def test_lis_returns_increasing_subsequence():
+    sa = _load("matching-similarity/sequence_align.py", "sequence_align")
+    run = sa.lis([0.62, 0.55, 0.66, 0.70, 0.68, 0.74, 0.80, 0.79])
+    assert len(run) == 5
+    assert all(run[i] < run[i + 1] for i in range(len(run) - 1))   # strictly up
+
+
+# --------------------------------------------------------------------------
+# budget_allocation: 0/1 knapsack + coin change
+# --------------------------------------------------------------------------
+
+
+def test_knapsack_picks_optimal_subset_within_capacity():
+    ba = _load("experiments/budget_allocation.py", "budget_allocation")
+    value, chosen = ba.knapsack_01(ba.DEMO_ITEMS, 8)
+    assert value == 12.0
+    cost = sum(it.cost for it in ba.DEMO_ITEMS if it.label in chosen)
+    assert cost <= 8
+
+
+def test_coin_change_minimizes_pieces_or_none():
+    ba = _load("experiments/budget_allocation.py", "budget_allocation")
+    count, combo = ba.coin_change([50, 30, 20], 100)
+    assert count == 2 and sum(combo) == 100
+    assert ba.coin_change([50, 30], 10) is None            # unreachable target

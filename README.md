@@ -521,7 +521,7 @@ a CI gate), and ships a sample with planted defects plus a pytest that
 proves the defects are caught. Run the suite from `snippets/`:
 
 ```bash
-python -m pytest tests/ -q      # 49 tests
+python -m pytest tests/ -q      # 60 tests
 ```
 
 ## 7. Auditing a corpus as data
@@ -727,6 +727,13 @@ disagreement (surface them, never merge).
 sort-and-sweep over the spans (O(n log n), not all-pairs) — the same interval
 pattern used for calendars and genome ranges, here cleaning annotation data.
 
+And when you synthesize utterances from multiple slots, the naive full Cartesian
+product is mostly junk (the same entity in two slots, domain-forbidden pairs).
+[`constraint_expand.py`](./snippets/nlu/constraint_expand.py) enumerates only the
+*valid* combinations by **backtracking** — building each assignment slot by slot
+and pruning a whole subtree the moment a constraint breaks, the N-queens/Sudoku
+shape applied to clean training data.
+
 ## 14. The same metrics in SQL
 
 When the data already landed in Postgres, you don't export — you query.
@@ -806,7 +813,7 @@ same coverage three ways — stdlib stream, DuckDB, polars lazy — and asserts 
 agree. DuckDB/polars are optional heavy dependencies (like `pyahocorasick` in
 #4); the stdlib path always runs.
 
-### Three streaming primitives worth owning
+### Streaming primitives worth owning
 
 Once the data won't fit in memory, a few classic algorithms keep coming up; each
 holds bounded memory regardless of stream size, and each is one short file:
@@ -821,6 +828,10 @@ holds bounded memory regardless of stream size, and each is one short file:
 - **Reservoir sampling** — a uniform spot-check sample in one pass, without
   knowing the stream length up front
   ([`scale/reservoir_sample.py`](./snippets/scale/reservoir_sample.py)).
+- **Sliding window + two pointers** — local quality instead of a global average:
+  a rolling-window mean (O(1) per step) localizes a quality dip, and a
+  two-pointer scan finds the longest run under a defect budget
+  ([`scale/windowed_metrics.py`](./snippets/scale/windowed_metrics.py)).
 
 ### Decision rule
 
@@ -888,6 +899,20 @@ interval, and a paired significance test. The first is what juniors report; all
 three are what makes the call defensible. Runnable:
 [`snippets/experiments/strategy_ab.py`](./snippets/experiments/strategy_ab.py) `--significance`.
 
+### Deciding under a budget
+
+Once a matcher ships, the decisions become resource ones, and two are textbook
+optimizations rather than statistics. When a quantity is *monotone* in a knob —
+the number of fuzzy matches that fire only falls as the threshold rises — the
+lowest threshold meeting a review budget is a **binary search on the answer**, not
+a scan ([`threshold_search.py`](./snippets/experiments/threshold_search.py), which
+also writes out `lower_bound`/`upper_bound` so the invariant is visible). And
+choosing *which* segments to review under a fixed effort budget, to buy the most
+coverage value, is **0/1 knapsack**; hitting an exact word-count batch in the
+fewest segments is **coin change**
+([`budget_allocation.py`](./snippets/experiments/budget_allocation.py)) — both
+dynamic programming indexed by the budget rather than by position.
+
 ## 17. Data quality, measured in model accuracy
 
 Every other chapter treats data as the product; this one connects it to what
@@ -947,6 +972,13 @@ Levenshtein distance with the classic two-row DP, plus a *bounded* variant that
 bails as soon as the distance provably exceeds the budget (so screening a big
 term list stays cheap). Cosine ranks; edit distance gates.
 
+Edit distance is one of a family of sequence DPs.
+[`sequence_align.py`](./snippets/matching-similarity/sequence_align.py) adds the
+other two that recur in corpus work: **LCS** (the longest order-preserving shared
+token run — the backbone of `diff`, so you can see what a revision changed) and
+**LIS** (the longest non-regressing run in a quality-score stream). Same
+build-a-table-then-walk-it shape, different question.
+
 ## 19. Reasoning over the lexicon
 
 Chapter 11 built a concept graph but only read the direct `broader` edge. The
@@ -979,6 +1011,15 @@ $ build_lexicon.py glossary_lex.csv --link "collect the loot then check cooldown
 
 Transitive reasoning plus entity linking turn the flat lexicon of #11 into
 something you can actually query and connect to running text.
+
+A lexicon is also a general graph — concepts relate sideways, not just up and
+down — so "how far apart are two concepts, and by what route?" becomes a
+traversal question.
+[`concept_paths.py`](./snippets/knowledge-graph/concept_paths.py) answers it three
+ways and shows they disagree: **BFS** finds the fewest-hops path, **DFS** answers
+reachability, and **Dijkstra** finds the least-*cost* path when edges carry a
+weight — which often has more hops than the BFS route. Pick the traversal that
+matches the question.
 
 ## 20. Merging heterogeneous sources into one corpus
 
@@ -1114,6 +1155,12 @@ project — they're self-contained.
 | Order a concept hierarchy broader-before-narrower | [`knowledge-graph/build_lexicon.py`](./snippets/knowledge-graph/build_lexicon.py) `--topo` |
 | Merge messy multi-source CSVs (encoding/lang-code/conflicts) | [`multi-source/build_corpus.py`](./snippets/multi-source/build_corpus.py) |
 | Collapse duplicate records that link only transitively | [`multi-source/cluster_duplicates.py`](./snippets/multi-source/cluster_duplicates.py) |
+| Shortest vs cheapest path between concepts (BFS / DFS / Dijkstra) | [`knowledge-graph/concept_paths.py`](./snippets/knowledge-graph/concept_paths.py) |
+| Lowest threshold meeting a review budget (binary search) | [`experiments/threshold_search.py`](./snippets/experiments/threshold_search.py) |
+| Localize a quality dip (sliding window / two pointers) | [`scale/windowed_metrics.py`](./snippets/scale/windowed_metrics.py) |
+| Enumerate constrained slot combinations (backtracking) | [`nlu/constraint_expand.py`](./snippets/nlu/constraint_expand.py) |
+| Diff two token revisions / longest non-regressing run (LCS, LIS) | [`matching-similarity/sequence_align.py`](./snippets/matching-similarity/sequence_align.py) |
+| Spend a budget for the most coverage (knapsack / coin change) | [`experiments/budget_allocation.py`](./snippets/experiments/budget_allocation.py) |
 
 ### Field notes — bugs hit building this book
 

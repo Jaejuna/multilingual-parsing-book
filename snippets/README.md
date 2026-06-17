@@ -43,9 +43,12 @@ snippets/
 │   ├── glossary.csv / segments.csv  # demo data
 ├── experiments/                # decide matcher changes with evidence
 │   ├── strategy_ab.py               # precision/recall A/B over a gold set
+│   ├── threshold_search.py          # binary search: lookups + parametric threshold
+│   ├── budget_allocation.py         # 0/1 knapsack + coin-change budget DP
 │   └── gold.csv                     # labeled judgements
 ├── knowledge-graph/            # glossary -> lexicon / ontology
-│   ├── build_lexicon.py             # concepts, triples, cross-lingual lookup
+│   ├── build_lexicon.py             # concepts, triples, cross-lingual lookup, topo sort
+│   ├── concept_paths.py             # BFS / DFS / Dijkstra between concepts
 │   └── glossary_lex.csv             # demo with domain/synonym/broader
 ├── responsible-ai/             # is any language underserved?
 │   ├── coverage_bias.py             # per-language equity report
@@ -53,6 +56,7 @@ snippets/
 ├── nlu/                        # build NLU training data
 │   ├── build_intent_dataset.py      # templated intent+slot synthesis w/ spans
 │   ├── merge_spans.py               # sort-and-sweep span merge + conflict detection
+│   ├── constraint_expand.py         # backtracking: constrained slot combinations
 │   └── templates.json               # demo templates
 ├── sql/                        # the same metrics, in Postgres
 │   └── quality_metrics.sql          # adherence/coverage/drift/mojibake queries
@@ -64,17 +68,19 @@ snippets/
 ├── scale/                      # ch.15 out-of-core + streaming
 │   ├── out_of_core.py               # coverage via stdlib / DuckDB / polars (parity)
 │   ├── merge_shards.py              # heap k-way merge of pre-sorted shards
-│   └── reservoir_sample.py          # one-pass uniform sample from a stream
+│   ├── reservoir_sample.py          # one-pass uniform sample from a stream
+│   └── windowed_metrics.py          # sliding window + two-pointer longest run
 ├── data-model/                 # ch.17 data quality -> model performance
 │   └── data_quality_impact.py       # label-noise vs accuracy (stdlib Naive Bayes)
 ├── matching-similarity/        # ch.18 beyond exact matching
 │   ├── fuzzy_match.py               # char n-gram TF-IDF cosine; variant/typo recall
-│   └── edit_distance.py             # bounded Levenshtein; typo-budget term lookup
+│   ├── edit_distance.py             # bounded Levenshtein; typo-budget term lookup
+│   └── sequence_align.py            # LCS diff + LIS trend (sequence DP)
 ├── multi-source/               # ch.20 merge heterogeneous CSVs
 │   ├── build_corpus.py              # encoding/lang-code normalize + conflict + provenance
 │   └── cluster_duplicates.py        # union-find clustering of duplicate records
 └── tests/                      # pytest over the Part II tools
-    └── test_part2.py                # 49 tests, asserts planted defects are caught
+    └── test_part2.py                # 60 tests, asserts planted defects are caught
 ```
 
 (ch.19's transitive reasoning, entity linking, and broader-before-narrower
@@ -136,11 +142,17 @@ topological ordering extend
 | Merge sorted corpus shards too big to hold in memory | [`scale/merge_shards.py`](./scale/merge_shards.py) |
 | Draw a uniform spot-check sample from a stream of unknown size | [`scale/reservoir_sample.py`](./scale/reservoir_sample.py) |
 | Merge overlapping annotation spans and flag label conflicts | [`nlu/merge_spans.py`](./nlu/merge_spans.py) |
+| Shortest / cheapest path between two concepts (BFS vs Dijkstra) | [`knowledge-graph/concept_paths.py`](./knowledge-graph/concept_paths.py) |
+| Find the lowest threshold meeting a budget (binary search) | [`experiments/threshold_search.py`](./experiments/threshold_search.py) |
+| Localize a quality dip with a sliding window / two pointers | [`scale/windowed_metrics.py`](./scale/windowed_metrics.py) |
+| Enumerate constrained slot combinations (backtracking) | [`nlu/constraint_expand.py`](./nlu/constraint_expand.py) |
+| Diff two token revisions / longest non-regressing run (LCS, LIS) | [`matching-similarity/sequence_align.py`](./matching-similarity/sequence_align.py) |
+| Spend a review budget for the most coverage (knapsack / coin change) | [`experiments/budget_allocation.py`](./experiments/budget_allocation.py) |
 
 Run the Part II test suite from this directory:
 
 ```bash
-python -m pytest tests/ -q      # 49 tests; needs `pip install pytest`
+python -m pytest tests/ -q      # 60 tests; needs `pip install pytest`
 ```
 
 Every Part II tool is stdlib-only, prints a Markdown report by default
